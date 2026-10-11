@@ -50,6 +50,35 @@ docker compose logs --tail=100 api worker
 
 服务器模式下指纹库只读，旧的同步上游测试、自动采集和建库写接口返回 409。在本地维护 `data/` 后重新构建并重启 API 和 worker，更新参考库；每个任务记录实际使用的 `bank_sha256`。手动测试和指纹库查看继续可用。GitHub Pages 静态站点仍为手动版本。
 
+### 构建时依赖下载中断
+
+如果构建日志在 `pip install` 阶段出现 `Broken pipe`、`Connection broken` 或下载超时，说明下载连接中断，此时应用尚未启动。pip 的新版本提示不是错误原因。
+
+构建现在使用 120 秒网络超时、连接重试，并对整个依赖安装最多尝试 3 次；同一次构建中已完成的下载会缓存供下一次尝试使用。持续无法连接的软件源仍需排查网络或更换源。
+
+先更新代码并重新构建：
+
+```sh
+git pull --ff-only
+docker compose build api
+docker compose up -d --no-build
+```
+
+API、worker 和 scheduler 共用同一个镜像，构建 `api` 一次即可。如果服务器到官方 PyPI 的连接不稳定，可在项目 `.env` 中添加或修改：
+
+```dotenv
+PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+也可以仅为本次构建指定镜像源：
+
+```sh
+PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple docker compose build api
+docker compose up -d --no-build
+```
+
+这里使用的是 [清华 PyPI 镜像](https://mirrors.tuna.tsinghua.edu.cn/help/pypi/)，也可设置为服务器能稳定访问的其他 HTTPS 包索引地址。该配置仅影响构建时的 Python 包下载，不改变运行时上游模型地址。不需要升级服务器宿主机的 pip，也不要删除持久化卷来解决下载失败。
+
 ### 可视化监测页面：`/status`
 
 部署后打开 **`http://服务器地址:10001/status`**。在部署服务器本机访问时使用 `http://127.0.0.1:10001/status`；远程直连需要按前文设置 `BIND_ADDRESS=0.0.0.0`，也可以使用反向代理域名。

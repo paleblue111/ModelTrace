@@ -2,7 +2,21 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 OPENBLAS_NUM_THREADS=1
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt && useradd --create-home --uid 10001 modeltrace && mkdir /app/runtime && chown modeltrace:modeltrace /app/runtime
+ARG PIP_INDEX_URL=https://pypi.org/simple
+# Older pip versions do not retry every interrupted response body. Retry the
+# whole install as well, retaining completed downloads between attempts.
+RUN set -eu; \
+    attempt=1; \
+    until python -m pip install --disable-pip-version-check --progress-bar off \
+        --timeout 120 --retries 5 --cache-dir /tmp/modeltrace-pip-cache \
+        --index-url "$PIP_INDEX_URL" -r requirements.txt; do \
+        if [ "$attempt" -ge 3 ]; then exit 1; fi; \
+        echo "Dependency installation interrupted; retrying ($attempt/3)..." >&2; \
+        attempt=$((attempt + 1)); \
+        sleep 5; \
+    done; \
+    rm -rf /tmp/modeltrace-pip-cache
+RUN useradd --create-home --uid 10001 modeltrace && mkdir /app/runtime && chown modeltrace:modeltrace /app/runtime
 COPY --chown=modeltrace:modeltrace . .
 USER modeltrace
 EXPOSE 10001
