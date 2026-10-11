@@ -21,6 +21,7 @@ let loading = false;
 let ready = false;
 let revision = 0;
 let networkError = '';
+let detailError = '';
 let editingId = null;
 let sourceId = null;
 let sourceUrl = '';
@@ -109,7 +110,7 @@ function render() {
   $('connection').textContent = networkError ? '连接暂时中断' : !dashboardId ? '等待配置' : schedulerOnline ? '调度服务在线' : '调度服务离线';
   $('connection').className = `connection ${networkError ? 'error' : schedulerOnline ? 'online' : ''}`;
   $('refresh').disabled = loading || busy;
-  if (!model) { notice(networkError || (monitorId && ready ? '正在加载所选监测…' : '')); return; }
+  if (!model) { notice(networkError || detailError || (monitorId && ready ? '正在加载所选监测…' : '')); return; }
   $('selected-name').textContent = title(model);
   $('settings-open').disabled = busy || !ready;
   $('monitor-copy').disabled = busy || !ready;
@@ -145,9 +146,14 @@ function render() {
   $('active-progress').value = active?.progress.valid || 0;
   renderCandidates(result);
   $('history-count').textContent = model.history.length;
+  const focusedHistoryId = document.activeElement?.closest('#history tr[data-id]')?.dataset.id;
   if (model.history.length) {
     $('history').innerHTML = model.history.map((item) => `<tr data-id="${escape(item.id)}" tabindex="0" role="button" aria-label="查看 ${escape(date(item.finished_at))} 的检测详情"><td>${escape(date(item.finished_at))}</td><td>${escape(item.requested_model)}</td><td>${escape(item.result?.prediction_name || '—')}</td><td>${pct(item.result?.probability)}</td><td>${item.progress.valid} / 3</td><td><span class="badge ${badge(item.status)}">${labels[item.status] || '未知'}</span></td><td>${duration(item.elapsed_seconds)}</td></tr>`).join('');
   } else $('history').innerHTML = emptyHistory;
+  if (focusedHistoryId) {
+    const row = [...$('history').querySelectorAll('tr[data-id]')].find((item) => item.dataset.id === focusedHistoryId);
+    (row || $('refresh')).focus({preventScroll:true});
+  }
   const warnings = [networkError, model.last_error];
   if (!schedulerOnline) warnings.push('调度服务暂未在线，检查 Docker 中的 scheduler 服务。页面不会替代服务器发起定时检测。');
   notice(warnings.filter(Boolean).join('；'));
@@ -165,18 +171,28 @@ async function refresh() {
       : await request(`/status/api/dashboards/${requestedDashboard}`);
     if (expectedRevision !== revision || busy) return;
     const selected = dashboard.monitors.some((item) => item.id === monitorId) ? monitorId : dashboard.monitors[0]?.id || null;
-    const fresh = selected ? await request(`/status/api/monitors/${selected}`) : null;
-    if (expectedRevision !== revision || busy) return;
     dashboardId = dashboard.id;
     monitors = dashboard.monitors;
     schedulerOnline = dashboard.scheduler_online;
     monitorId = selected;
-    model = fresh;
-    if (fresh) upsert(fresh);
+    if (model?.id !== selected) model = null;
     remember();
     networkError = '';
+    detailError = '';
     ready = true;
     render();
+    if (selected) {
+      try {
+        const fresh = await request(`/status/api/monitors/${selected}`);
+        if (expectedRevision !== revision || busy) return;
+        upsert(fresh);
+      } catch (error) {
+        if (expectedRevision !== revision || busy) return;
+        model = null;
+        detailError = `当前监测详情加载失败：${error.message}。可以切换其他监测或点击刷新重试。`;
+      }
+      render();
+    }
   } catch (error) {
     if (expectedRevision !== revision) return;
     networkError = error.message;
@@ -262,6 +278,7 @@ function select(id) {
   revision++;
   monitorId = id;
   model = null;
+  detailError = '';
   $('history-dialog').close();
   remember();
   render();
@@ -301,6 +318,7 @@ function initialize() {
   model = null;
   schedulerOnline = false;
   networkError = '';
+  detailError = '';
   $('settings-dialog').close();
   $('history-dialog').close();
   const fragment = new URLSearchParams(location.hash.slice(1));

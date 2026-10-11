@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <title>模型监测 · CodexPRO</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='status.css') }}">
+  <link rel="stylesheet" href="{{ assets['status.css'] }}">
 </head>
 <body>
   <aside class="sidebar">
@@ -52,6 +52,6 @@
   </div>
   <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">CONNECTION SETTINGS</span><h2 id="settings-title">新增监测</h2></div><button class="icon-button" type="button" data-close="settings-dialog" aria-label="关闭设置">×</button></div><p id="settings-intro" class="dialog-intro">每个监测独立保存，关闭页面后服务器继续执行。</p><label>监测名称 <span>可选，方便区分供应商</span><input id="config-name" maxlength="80" placeholder="例如：供应商 A · 主力模型"></label><label>接口地址 <span>URL</span><input id="config-url" type="url" placeholder="https://api.example.com/v1" required></label><label>API Key <span id="key-hint">加密保存，不回显</span><input id="config-key" type="password" autocomplete="new-password" placeholder="输入上游服务的 Key" required></label><label>模型名称<input id="config-model" placeholder="上游接受的模型名或别名" required></label><div class="form-row"><label>思考强度<select id="config-effort"><option>none</option><option>minimal</option><option>low</option><option selected>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label><label>检测间隔（分钟）<input id="config-interval" type="number" min="1" max="10080" step="1" value="30" required></label></div><p class="form-help">间隔从上一轮结束后开始计算。每轮使用你的上游 Key，可能产生模型调用费用。</p><p id="settings-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button class="button secondary" type="button" data-close="settings-dialog">取消</button><button id="save" class="button primary" type="submit">保存配置</button></div></form></dialog>
   <dialog id="history-dialog"><div class="dialog-heading"><h2>检测详情</h2><button class="icon-button" type="button" data-close="history-dialog" aria-label="关闭详情">×</button></div><div id="history-detail"></div></dialog>
-  <script type="module" src="{{ url_for('static', filename='status.js') }}"></script>
+  <script type="module" src="{{ assets['status.js'] }}"></script>
 </body>
 </html>

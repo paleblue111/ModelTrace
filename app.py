@@ -4,9 +4,10 @@ import json
 import math
 import re
 import secrets
+from hashlib import sha256
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_from_directory, url_for
 
 from enrollment import bank_summary, enroll_automatic, request_completion, test_automatic
 from fingerprint import analyze_global_outputs, generate_challenges, load_bank, parse_numbers
@@ -21,6 +22,10 @@ app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 app.register_blueprint(detection_api)
 app.register_blueprint(monitor_api)
 PROJECT = Path(__file__).resolve().parent
+STATUS_ASSETS = {
+    name: sha256((PROJECT / "static" / name).read_bytes()).hexdigest()[:16]
+    for name in ("status.css", "status.js")
+}
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
 UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
 DEFAULT_BANK_ID = "claude"
@@ -168,7 +173,18 @@ def home():
 
 @app.get("/status")
 def status_page():
-    return render_template("status.html")
+    assets = {name: url_for("status_asset", version=version, filename=name)
+              for name, version in STATUS_ASSETS.items()}
+    return render_template("status.html", assets=assets), 200, {"Cache-Control": "no-store"}
+
+
+@app.get("/status/assets/<version>/<filename>")
+def status_asset(version, filename):
+    if STATUS_ASSETS.get(filename) != version:
+        abort(404)
+    response = send_from_directory(app.static_folder, filename, max_age=31536000)
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
 
 
 @app.get("/api/challenges")

@@ -1,5 +1,6 @@
 """Optional real-browser integration check. Uses fake Redis and numeric model fixtures."""
 import os
+import json
 from pathlib import Path
 import sys
 import threading
@@ -37,6 +38,21 @@ def delay_one_monitor_response(response):
         delay_release.wait(5)
     return response
 
+
+# Seed real browser HTTP caches with incompatible assets at the old fixed URLs.
+cache_seed = {'active': False}
+
+@app.before_request
+def serve_previous_assets():
+    if cache_seed['active'] and request.path in ('/static/status.js', '/static/status.css'):
+        is_js = request.path.endswith('.js')
+        return ('window.previousAssetLoaded = true;' if is_js else 'body { --previous-asset: yes; }',
+                200, {'Content-Type': 'text/javascript' if is_js else 'text/css',
+                      'Cache-Control': 'public, max-age=14400'})
+
+@app.get('/test/cache-seed')
+def seed_page():
+    return '<link rel="stylesheet" href="/static/status.css"><script src="/static/status.js"></script>'
 
 server = make_server('127.0.0.1', 0, app, threaded=True)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -274,6 +290,78 @@ try:
         assert editing_page.url == isolated_url
         assert monitors.get(monitor_id)['name'] == '保存中的名称'
         editing_page.close()
+        # Previously cached unversioned assets must never execute on the new page.
+        cached_context = browser.new_context()
+        cached_page = cached_context.new_page()
+        cached_page.on('pageerror', lambda error: errors.append(str(error)))
+        cache_seed['active'] = True
+        cached_page.goto(base + '/test/cache-seed', wait_until='networkidle')
+        assert cached_page.evaluate('window.previousAssetLoaded') is True
+        cache_seed['active'] = False
+        asset_requests = []
+        cached_page.on('request', lambda req: asset_requests.append(req.url))
+        cached_page.goto(base + '/status')
+        expect(cached_page.locator('#monitor-add')).to_be_enabled()
+        assert cached_page.evaluate('window.previousAssetLoaded') is None
+        assert not any('/static/status.' in url for url in asset_requests)
+        assert sum('/status/assets/' in url for url in asset_requests) == 2
+        cached_page.locator('#monitor-add').click()
+        expect(cached_page.locator('#settings-dialog')).to_be_visible()
+        cached_context.close()
+
+        # One failed detail endpoint must not hide the list or block other monitors.
+        partial = fresh_context.new_page()
+        partial.on('pageerror', lambda error: errors.append(str(error)))
+        broken_endpoint = '**/status/api/monitors/' + monitor_id
+        partial.route(broken_endpoint, lambda route: route.fulfill(status=503, content_type='application/json', body='{"error":"detail unavailable"}'))
+        partial.goto(base + '/status')
+        expect(partial.locator('#notice')).to_contain_text('详情加载失败')
+        expect(partial.locator('.monitor-tile')).to_have_count(3)
+        expect(partial.locator('#monitor-add')).to_be_enabled()
+        partial.locator('#monitor-add').click()
+        expect(partial.locator('#settings-dialog')).to_be_visible()
+        partial.get_by_role('button', name='关闭设置', exact=True).click()
+        partial.locator(f'[data-action="select"][data-id="{second_id}"]').click()
+        expect(partial.locator('#target-model')).to_have_text('gpt-6-astra')
+        partial.unroute(broken_endpoint)
+        partial.locator(f'[data-action="select"][data-id="{monitor_id}"]').click()
+        expect(partial.locator('#target-model')).to_have_text(before['model'])
+        expect(partial.locator('#notice')).not_to_contain_text('详情加载失败')
+
+        # Keep the focused history record through two automatic polling cycles.
+        row = partial.locator('#history tr[data-id]').first
+        focused_id = row.get_attribute('data-id')
+        row.focus()
+        for _ in range(2):
+            partial.wait_for_event('response', predicate=lambda response: response.url.endswith('/status/api/monitors/' + monitor_id), timeout=6000)
+            expect(partial.locator(f'#history tr[data-id="{focused_id}"]')).to_be_focused()
+        partial.keyboard.press('Enter')
+        expect(partial.locator('#history-dialog')).to_be_visible()
+        partial.get_by_role('button', name='关闭详情', exact=True).click()
+
+        # Realistic and maximum-duration values must stay on one line at every width.
+        for elapsed, text in [(69, '1 分 9 秒'), (599, '9 分 59 秒'), (1799, '29 分 59 秒')]:
+            record = monitors.get(monitor_id)
+            record['history'][0]['elapsed_seconds'] = elapsed
+            backend.redis.set(monitors.key(monitor_id), json.dumps(record))
+            partial.locator('#refresh').click()
+            expect(partial.locator('#duration')).to_have_text(text)
+            for width in (320, 390, 620, 768, 1024, 1440):
+                partial.set_viewport_size({'width': width, 'height': 1000})
+                metrics = partial.locator('#duration').evaluate("""el => {
+                    const range = document.createRange(); range.selectNodeContents(el);
+                    const lines = [...range.getClientRects()];
+                    const parent = el.parentElement.getBoundingClientRect();
+                    return {lines: lines.length, fits: lines.every(line => line.right <= parent.right + 1),
+                            overflow: document.documentElement.scrollWidth > innerWidth};
+                }""")
+                assert metrics == {'lines': 1, 'fits': True, 'overflow': False}, (width, text, metrics)
+            if elapsed == 69:
+                partial.screenshot(path=str(output / 'fixed-desktop.png'), full_page=True)
+                partial.set_viewport_size({'width':390,'height':844})
+                partial.screenshot(path=str(output / 'fixed-mobile.png'), full_page=True)
+        partial.close()
+
         # Long model/provider names must not stretch tablet or mobile grids.
         monitors.update(monitor_id, {'name': '供应商' * 26, 'model': 'long-model-' * 50})
         legacy_page.goto(base + '/status#monitor=' + monitor_id)
@@ -284,6 +372,7 @@ try:
         assert not errors, errors
         browser.close()
     print('Browser integration passed: shared dashboard across browsers, root redirect, multiple providers/models, key reuse, independent history/schedules, bookmark restore, legacy migration, search, and desktop/mobile layout.')
+    print('Regression checks passed: cached old assets, isolated detail failures, keyboard focus through polling, single-line durations at 320–1440px.')
     print(f'Screenshots: {output}')
 finally:
     server.shutdown()

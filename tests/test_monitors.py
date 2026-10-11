@@ -441,3 +441,23 @@ def test_concurrent_legacy_adoption_does_not_duplicate_or_lose_members(backend):
     ids = store.get_dashboard(shared['id'])['monitor_ids']
     assert len(ids) == len(records)
     assert set(ids) == {record['id'] for record in records}
+
+
+def test_status_assets_use_content_addressed_urls(client):
+    import hashlib
+    import re
+    from pathlib import Path
+    response = client.get('/status')
+    assert response.headers['Cache-Control'] == 'no-store'
+    urls = re.findall(r'(?:src|href)="(/status/assets/[^"]+)"', response.text)
+    assert len(urls) == 2
+    for url in urls:
+        filename = url.rsplit('/', 1)[1]
+        content = (Path(__file__).resolve().parents[1] / 'static' / filename).read_bytes()
+        digest = hashlib.sha256(content).hexdigest()[:16]
+        assert url == f'/status/assets/{digest}/{filename}'
+        asset = client.get(url)
+        assert asset.status_code == 200 and asset.data == content
+        assert 'immutable' in asset.headers['Cache-Control']
+        assert client.get(f'/status/assets/stale/{filename}').status_code == 404
+    assert client.get('/status/assets/stale/app.py').status_code == 404
