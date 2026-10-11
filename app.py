@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import secrets
 from pathlib import Path
@@ -13,7 +14,11 @@ from fingerprint import analyze_global_outputs, generate_challenges, load_bank, 
 from bank_builder import build_bank, read_rows
 
 
+from detection_api import api as detection_api
+
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+app.register_blueprint(detection_api)
 PROJECT = Path(__file__).resolve().parent
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
 UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
@@ -164,6 +169,9 @@ def index():
         bank=summaries[DEFAULT_BANK_ID],
         unified=summarized_unified_bank(),
         default_bank_id=DEFAULT_BANK_ID,
+        async_enabled=bool(os.getenv("REDIS_URL")),
+        auth_required=bool(os.getenv("MODELTRACE_API_TOKEN")),
+        async_only=os.getenv("ASYNC_ONLY", "false").lower() == "true",
     )
 
 
@@ -193,7 +201,7 @@ def automatic_test():
             api_model=payload["api_model"].strip(),
             temperature=requested_temperature(payload),
             bank=unified_bank,
-            api_format="auto",
+            api_format="responses",
         )
         result["bank"] = summarized_unified_bank()
         return jsonify(result)
@@ -211,7 +219,7 @@ def automatic_test_probe():
             api_model=payload["api_model"].strip(),
             prompt=payload["prompt"],
             temperature=requested_temperature(payload),
-            api_format="auto",
+            api_format="responses",
         )
         expected_count = int(payload["expected_count"])
         parsed_numbers = len(parse_numbers(text))
@@ -283,7 +291,7 @@ def automatic_enrollment():
             model_label=payload["model_label"].strip(),
             sample_count=int(payload.get("sample_count", 36)),
             temperature=requested_temperature(payload),
-            api_format="auto",
+            api_format="responses",
             data_file=config["data_file"],
             bank_file=config["bank_file"],
             bank_id=bank_id,

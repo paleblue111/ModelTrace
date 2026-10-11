@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8,<10
+fakeredis>=2.25,<3

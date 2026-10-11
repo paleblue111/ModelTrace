@@ -1,0 +1,57 @@
+x-common: &common
+  build: .
+  image: modeltrace:local
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  environment: &environment
+    REDIS_URL: redis://redis:6379/0
+    MODELTRACE_API_TOKEN: ${MODELTRACE_API_TOKEN:?Set MODELTRACE_API_TOKEN in .env}
+    CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?Set CREDENTIAL_ENCRYPTION_KEY in .env}
+    REQUIRE_API_AUTH: "true"
+    ASYNC_ONLY: "true"
+    REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-240}
+    TASK_TIMEOUT_SECONDS: ${TASK_TIMEOUT_SECONDS:-1800}
+    QUEUE_TIMEOUT_SECONDS: ${QUEUE_TIMEOUT_SECONDS:-3600}
+    RESULT_TTL_SECONDS: ${RESULT_TTL_SECONDS:-86400}
+    MAX_QUEUED_TASKS: ${MAX_QUEUED_TASKS:-100}
+    UPSTREAM_ALLOWED_HOSTS: ${UPSTREAM_ALLOWED_HOSTS:-}
+    ALLOW_PRIVATE_UPSTREAM: ${ALLOW_PRIVATE_UPSTREAM:-false}
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  api:
+    <<: *common
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-7860}:7860"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+  worker:
+    <<: *common
+    command: ["python", "detection_worker.py"]
+    stop_grace_period: 10s
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

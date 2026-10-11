@@ -267,6 +267,9 @@ def analyze_outputs(outputs: list[dict], bank: dict) -> dict:
         "prediction_name": results[0]["display_name"],
         "probability": results[0]["probability"],
         "used_outputs": len(valid),
+        "preliminary": len(valid) < 3,
+        "insufficient_samples": len(valid) < 3,
+        "sample_warning": "样本不足，当前为初步结果" if len(valid) < 3 else None,
         "results": results,
         "diagnostics": diagnostics,
         "calibration": {

@@ -44,7 +44,7 @@ async function loadChallenges() {
   byId("regenerate").disabled = true;
   byId("result").hidden = true;
   setMessage(byId("test-message"), "");
-  const response = await fetch("/api/challenges");
+  const response = await apiFetch("/api/challenges");
   state.challenges = (await response.json()).challenges;
   renderChallenges();
   byId("regenerate").disabled = false;
@@ -87,7 +87,9 @@ function renderResult(payload) {
   const apiNote = payload.api_test
     ? `<span>API 获得 ${payload.api_test.received}/${payload.api_test.requested} 份有效回答，实际尝试 ${payload.api_test.attempted}/${payload.api_test.max_attempts}${payload.api_test.errors.length ? `，${payload.api_test.errors.length} 次未采用` : ""}</span>`
     : "";
+  const warning = payload.insufficient_samples ? '<p class="message">样本不足，当前为初步结果。</p>' : '';
   byId("result").innerHTML = `
+    ${warning}
     <div class="result-summary">
       <div><span>最可能模型</span><strong>${escapeHtml(payload.prediction_name)}</strong></div>
       <div><span>统一库概率</span><strong>${percent(payload.probability)}</strong></div>
@@ -114,7 +116,7 @@ async function analyzeManual() {
     text: byId(`output-${index}`).value,
     expected_count: challenge.expected_count,
   }));
-  const response = await fetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outputs }) });
+  const response = await apiFetch("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ outputs }) });
   const payload = await response.json();
   if (response.ok) {
     setMessage(byId("test-message"), "");
@@ -140,16 +142,16 @@ function renderApiProgress(states, status) {
   }).join("");
 }
 
-async function testViaApi(event) {
+async function testViaApiLegacy(event) {
   event.preventDefault();
   const button = event.currentTarget.querySelector("button[type=submit]");
   button.disabled = true;
   byId("result").hidden = true;
   setMessage(byId("test-message"), "");
 
-  const challengeResponse = await fetch("/api/challenges");
+  const challengeResponse = await apiFetch("/api/challenges");
   const firstBatch = (await challengeResponse.json()).challenges;
-  const retryResponse = await fetch("/api/challenges");
+  const retryResponse = await apiFetch("/api/challenges");
   const challenges = firstBatch.concat((await retryResponse.json()).challenges);
   const states = challenges.map(() => "pending");
   const outputs = [];
@@ -167,7 +169,7 @@ async function testViaApi(event) {
     states[index] = "working";
     renderApiProgress(states, `正在进行第 ${index + 1} 次尝试，等待模型完整输出……`);
     try {
-      const response = await fetch("/api/test/probe", {
+      const response = await apiFetch("/api/test/probe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -204,7 +206,7 @@ async function testViaApi(event) {
   }
 
   renderApiProgress(states, "模型回答已收齐，正在计算归因概率……");
-  const analysisResponse = await fetch("/api/analyze", {
+  const analysisResponse = await apiFetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ outputs }),
@@ -219,6 +221,108 @@ async function testViaApi(event) {
     setMessage(byId("test-message"), result.error || "API 自动测试失败。", "error");
   }
   button.disabled = false;
+}
+
+async function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const token = byId("service-token")?.value.trim();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(url, { ...options, headers });
+  if (response.status === 401) throw new Error("请填写有效的服务访问令牌");
+  return response;
+}
+
+let taskId = null;
+try { taskId = sessionStorage.getItem("modeltrace-task"); } catch (_) { /* storage optional */ }
+let polling = false;
+const terminalStatuses = new Set(["completed", "partial", "failed", "cancelled", "interrupted"]);
+const taskStatusNames = { queued: "排队中", running: "检测中", completed: "检测完成", partial: "样本不足，已返回初步结果", failed: "检测失败", cancelled: "已取消", interrupted: "执行中断" };
+
+function showTaskControls(active) {
+  byId("api-test-form").querySelector("button[type=submit]").disabled = active;
+  byId("task-label").textContent = taskId ? `任务 ID：${taskId}` : "";
+  byId("cancel-task").hidden = !active;
+  byId("resume-task").hidden = !taskId || polling;
+}
+
+async function pollTask() {
+  if (polling || !taskId) return;
+  polling = true;
+  showTaskControls(true);
+  setMessage(byId("test-message"), "");
+  try {
+    while (true) {
+      const response = await apiFetch(`/api/detections/${encodeURIComponent(taskId)}`);
+      const task = await response.json();
+      if (!response.ok) {
+        if (response.status === 404) {
+          taskId = null;
+          try { sessionStorage.removeItem("modeltrace-task"); } catch (_) { /* storage optional */ }
+        }
+        throw new Error(task.error || "无法读取任务");
+      }
+      const progress = task.progress;
+      const states = Array.from({ length: progress.max_attempts }, (_, index) => {
+        if (index < task.samples.length) return task.samples[index].accepted ? "done" : "invalid";
+        if (index < progress.attempted) return task.status === "running" ? "working" : "error";
+        return terminalStatuses.has(task.status) ? "skipped" : "pending";
+      });
+      renderApiProgress(states, `${taskStatusNames[task.status]} · ${task.elapsed_seconds} 秒`);
+      if (terminalStatuses.has(task.status)) {
+        if (task.result) renderResult({ ...task.result, api_test: {
+          requested: progress.target, received: progress.valid, attempted: progress.attempted,
+          max_attempts: progress.max_attempts, errors: task.errors,
+        } });
+        const errorText = task.errors.map(item => item.message).join("；");
+        setMessage(byId("test-message"), `${taskStatusNames[task.status]}${errorText ? `：${errorText}` : ""}`,
+          task.status === "completed" ? "success" : "error");
+        try { sessionStorage.removeItem("modeltrace-task"); } catch (_) { /* storage optional */ }
+        polling = false;
+        showTaskControls(false);
+        byId("resume-task").hidden = true;
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  } catch (error) {
+    polling = false;
+    // Do not resubmit after a polling failure: the original job may still be billed.
+    showTaskControls(Boolean(taskId));
+    setMessage(byId("test-message"), taskId ? `${error.message}。后台任务不受影响，可继续查询。` : error.message);
+  }
+}
+
+async function testViaApi(event) {
+  if (!window.ASYNC_ENABLED) return testViaApiLegacy(event);
+  event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type=submit]");
+  button.disabled = true;
+  byId("result").hidden = true;
+  try {
+    const response = await apiFetch("/api/detections", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_url: byId("test-api-base").value, api_key: byId("test-api-key").value,
+        model: byId("test-api-model").value, temperature: optionalNumber("test-temperature") }),
+    });
+    const task = await response.json();
+    if (!response.ok) throw new Error(task.error || "无法提交任务");
+    taskId = task.id;
+    byId("test-api-key").value = "";
+    try { sessionStorage.setItem("modeltrace-task", taskId); } catch (_) { /* storage optional */ }
+    await pollTask();
+  } catch (error) {
+    setMessage(byId("test-message"), error.message);
+    button.disabled = false;
+  }
+}
+
+async function cancelTask() {
+  try {
+    const response = await apiFetch(`/api/detections/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+    const task = await response.json();
+    if (!response.ok) throw new Error(task.error || "取消失败");
+    if (!polling) await pollTask();
+  } catch (error) { setMessage(byId("test-message"), error.message); }
 }
 
 function updateUnifiedSummary(summary) {
@@ -236,7 +340,7 @@ function renderInventory() {
 }
 
 async function refreshBank() {
-  const response = await fetch(`/api/bank?bank_id=${encodeURIComponent(state.bankId)}`);
+  const response = await apiFetch(`/api/bank?bank_id=${encodeURIComponent(state.bankId)}`);
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "无法读取指纹库");
   state.bank = payload;
@@ -256,12 +360,12 @@ async function enrollAutomatically(event) {
   const started = Date.now();
   const progressTimer = window.setInterval(() => {
     const seconds = Math.floor((Date.now() - started) / 1000);
-    setMessage(byId("enrollment-message"), `正在自动识别协议并采集 ${requested} 份回答 · 已等待 ${seconds} 秒`, "working");
+    setMessage(byId("enrollment-message"), `正在通过 Responses 采集 ${requested} 份回答 · 已等待 ${seconds} 秒`, "working");
   }, 1000);
-  setMessage(byId("enrollment-message"), `正在自动识别协议并采集 ${requested} 份回答`, "working");
+  setMessage(byId("enrollment-message"), `正在通过 Responses 采集 ${requested} 份回答`, "working");
   let response;
   try {
-    response = await fetch("/api/enroll/auto", {
+    response = await apiFetch("/api/enroll/auto", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         base_url: byId("api-base").value,
@@ -302,7 +406,7 @@ async function createBank(event) {
   event.preventDefault();
   const button = event.currentTarget.querySelector("button[type=submit]");
   button.disabled = true;
-  const response = await fetch("/api/banks", {
+  const response = await apiFetch("/api/banks", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ label: byId("new-bank-name").value }),
@@ -335,4 +439,22 @@ byId("show-create-bank").addEventListener("click", () => { byId("create-bank-for
 byId("create-bank-form").addEventListener("submit", createBank);
 
 renderInventory();
-loadChallenges();
+const loadWithError = () => loadChallenges().catch(error => {
+  byId("regenerate").disabled = false;
+  setMessage(byId("test-message"), error.message);
+});
+if (!window.AUTH_REQUIRED) loadWithError();
+byId("service-token")?.addEventListener("change", () => {
+  loadWithError();
+  if (window.ASYNC_ENABLED && taskId) pollTask();
+});
+if (window.ASYNC_ENABLED) {
+  byId("resume-task").addEventListener("click", pollTask);
+  byId("cancel-task").addEventListener("click", cancelTask);
+  showTaskControls(Boolean(taskId));
+  if (taskId && !window.AUTH_REQUIRED) pollTask();
+}
+if (window.ASYNC_ONLY) {
+  byId("auto-enrollment").hidden = true;
+  byId("show-create-bank").hidden = true;
+}

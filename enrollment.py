@@ -2,13 +2,8 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import random
 import re
 import secrets
-import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,26 +16,6 @@ from challenge_suite import fingerprint_suite
 PROJECT = Path(__file__).resolve().parent
 DATA_FILE = PROJECT / "data" / "gpt_reference.jsonl"
 BANK_FILE = PROJECT / "data" / "gpt_bank.json"
-
-# urllib 默认的 Python-urllib User-Agent 会被 Cloudflare/WAF 网关直接拦成 403，
-# 因此伪装成真实客户端（与 gpt56 检测器使用的 UA 一致）。
-DEFAULT_UPSTREAM_USER_AGENT = (
-    "Codex Desktop/0.147.0-alpha.1.2 (Windows 10.0.26200; x86_64) unknown "
-    "(codex_exec; 0.147.0-alpha.1.2)"
-)
-RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
-MAX_ATTEMPTS = 3
-RETRY_BASE_DELAY = 1.0
-
-
-def upstream_user_agent() -> str:
-    override = (
-        os.environ.get("MODELTRACE_USER_AGENT")
-        or os.environ.get("GPT56_USER_AGENT")
-        or ""
-    ).strip()
-    return override or DEFAULT_UPSTREAM_USER_AGENT
-
 
 def bank_summary(bank: dict) -> dict:
     return {
@@ -154,164 +129,20 @@ def enroll_manual(
     }
 
 
-def completion_url(base_url: str, api_format: str = "openai") -> str:
-    normalized = base_url.rstrip("/")
-    if api_format == "anthropic":
-        if normalized.endswith("/messages"):
-            return normalized
-        if normalized.endswith("/v1"):
-            return normalized + "/messages"
-        return normalized + "/v1/messages"
-    if normalized.endswith("/chat/completions"):
-        return normalized
-    if normalized.endswith("/v1"):
-        return normalized + "/chat/completions"
-    return normalized + "/v1/chat/completions"
-
-
-def _looks_like_waf_block(text: str) -> bool:
-    lowered = text.lower()
-    return any(
-        marker in lowered
-        for marker in ("cloudflare", "just a moment", "cf-ray", "access denied", "attention required")
-    )
-
-
-def _compact_upstream_error(details: str, fallback: str) -> str:
-    text = (details or fallback or "").strip()
-    if not text:
-        return "上游接口返回错误"
-    if _looks_like_waf_block(text):
-        return (
-            "请求被上游网关拦截（Cloudflare/WAF 拦截页）。"
-            "请确认 base_url 指向 API 端点而非网页地址、API Key 有效，"
-            "或该服务是否限制当前网络/IP"
-        )
-    if text.startswith("<") or "{" not in text and "html" in text.lower():
-        return text[:200]
-    try:
-        payload = json.loads(text)
-        if isinstance(payload, dict):
-            error = payload.get("error")
-            if isinstance(error, dict):
-                return str(error.get("message") or error)
-            if error:
-                return str(error)
-            return json.dumps(payload, ensure_ascii=False)[:500]
-    except (json.JSONDecodeError, TypeError, ValueError):
-        pass
-    return text[:500]
-
-
-def _request_completion(
-    base_url: str,
-    api_key: str,
-    api_model: str,
-    prompt: str,
-    temperature: float | None,
-    api_format: str,
-    system_prompt: str = "",
-) -> str:
-    if api_format == "anthropic":
-        body_data = {
-            "model": api_model,
-            "max_tokens": 4096,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        if system_prompt:
-            body_data["system"] = system_prompt
-        headers = {
-            "x-api-key": api_key,
-            "Authorization": f"Bearer {api_key}",
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": upstream_user_agent(),
-        }
-    else:
-        body_data = {
-            "model": api_model,
-            "messages": [
-                *([{"role": "system", "content": system_prompt}] if system_prompt else []),
-                {"role": "user", "content": prompt},
-            ],
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": upstream_user_agent(),
-        }
-    if temperature is not None:
-        body_data["temperature"] = temperature
-    body = json.dumps(body_data).encode("utf-8")
-    url = completion_url(base_url, api_format)
-    payload = None
-    for attempt in range(1, MAX_ATTEMPTS + 1):
-        request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=240) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            break
-        except urllib.error.HTTPError as error:
-            details = error.read().decode("utf-8", errors="replace").strip()
-            message = _compact_upstream_error(details, error.reason)
-            retried = f"（已自动重试 {attempt - 1} 次）" if attempt > 1 else ""
-            if attempt < MAX_ATTEMPTS and error.code in RETRYABLE_STATUS:
-                time.sleep(RETRY_BASE_DELAY * attempt + random.uniform(0, 0.5))
-                continue
-            raise RuntimeError(f"HTTP {error.code}: {message}{retried}") from error
-        except urllib.error.URLError as error:
-            reason = getattr(error, "reason", str(error))
-            if attempt < MAX_ATTEMPTS:
-                time.sleep(RETRY_BASE_DELAY * attempt + random.uniform(0, 0.5))
-                continue
-            retried = f"（已自动重试 {attempt - 1} 次）" if attempt > 1 else ""
-            raise RuntimeError(f"无法连接接口：{reason}{retried}") from error
-    if api_format == "anthropic":
-        content = "".join(
-            block.get("text", "")
-            for block in payload["content"]
-            if block.get("type") == "text"
-        )
-        stop_reason = payload.get("stop_reason")
-        if stop_reason == "refusal":
-            raise RuntimeError("模型拒绝生成，本次回答不计入")
-        if stop_reason == "max_tokens":
-            raise RuntimeError("回答因 max_tokens 截断，本次回答不计入")
-    else:
-        choice = payload["choices"][0]
-        content = choice["message"]["content"]
-        if isinstance(content, list):
-            content = "".join(part.get("text", "") for part in content)
-        if choice.get("finish_reason") in {"length", "content_filter"}:
-            raise RuntimeError(f"回答未正常完成（{choice['finish_reason']}），本次回答不计入")
-    return str(content)
-
-
 def request_completion(
     base_url: str,
     api_key: str,
     api_model: str,
     prompt: str,
     temperature: float | None,
-    api_format: str = "auto",
+    api_format: str = "responses",
     system_prompt: str = "",
 ) -> str:
-    if api_format != "auto":
-        return _request_completion(
-            base_url, api_key, api_model, prompt, temperature, api_format, system_prompt
-        )
-    formats = ("openai", "anthropic")
-    errors = []
-    for candidate in formats:
-        try:
-            return _request_completion(
-                base_url, api_key, api_model, prompt, temperature, candidate, system_prompt
-            )
-        except RuntimeError as error:
-            errors.append(f"{candidate}: {error}")
-    raise RuntimeError("接口格式自动探测失败；" + "；".join(errors))
+    from responses_client import request_response
+
+    if api_format != "responses":
+        raise ValueError("只支持 Responses 接口")
+    return request_response(base_url, api_key, api_model, prompt, temperature, system_prompt)["text"]
 
 
 def test_automatic(
@@ -320,7 +151,7 @@ def test_automatic(
     api_model: str,
     temperature: float | None,
     bank: dict,
-    api_format: str = "openai",
+    api_format: str = "responses",
 ) -> dict:
     target_count = 3
     max_attempts = 6
@@ -370,7 +201,7 @@ def enroll_automatic(
     model_label: str,
     sample_count: int,
     temperature: float | None,
-    api_format: str = "openai",
+    api_format: str = "responses",
     data_file: Path = DATA_FILE,
     bank_file: Path = BANK_FILE,
     bank_id: str = "reference-bank",

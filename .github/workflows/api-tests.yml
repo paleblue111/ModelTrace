@@ -1,0 +1,26 @@
+name: Async detection API tests
+on:
+  push:
+    paths: ['*.py', 'requirements*.txt', 'tests/**', 'templates/**', 'static/app.js', 'Dockerfile', 'compose.yaml', '.github/workflows/api-tests.yml']
+  pull_request:
+    paths: ['*.py', 'requirements*.txt', 'tests/**', 'templates/**', 'static/app.js', 'Dockerfile', 'compose.yaml', '.github/workflows/api-tests.yml']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - run: node --check static/app.js
+      - name: Validate Compose and build image
+        env:
+          MODELTRACE_API_TOKEN: ci-placeholder
+          CREDENTIAL_ENCRYPTION_KEY: ci-placeholder
+        run: |
+          docker compose config --quiet
+          docker compose build
