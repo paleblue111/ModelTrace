@@ -80,7 +80,7 @@ try:
         page.locator('#save').click()
         expect(page.locator('#settings-dialog')).not_to_be_visible()
         monitor_id = monitors.default()['id']
-        assert page.url == base + '/status'
+        assert page.url == base + '/status#monitor=' + monitor_id
         assert 'test-upstream-key' not in page.evaluate('JSON.stringify(localStorage)')
         assert not monitors.get(monitor_id)['enabled']
         heartbeat()
@@ -97,17 +97,23 @@ try:
         other_context = browser.new_context()
         other_context.add_init_script('localStorage.setItem("modeltrace-monitor", "ffffffffffffffffffffffffffffffff"); localStorage.setItem("modeltrace-dashboard", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")')
         other_page = other_context.new_page()
-        other_page.goto(base + '/index')
+        other_page.goto(base + '/')
         expect(other_page.locator('#target-model')).to_have_text('gpt-6-sol')
         expect(other_page.locator('#history tr[data-id]')).to_have_count(1)
         expect(other_page.locator('#result-badge')).to_have_text('完整结果')
-        assert other_page.url == base + '/status'
+        assert other_page.url == base + '/status#monitor=' + monitor_id
         other_context.close()
         page.locator('#history tr[data-id]').click()
         expect(page.locator('#history-dialog')).to_be_visible()
         page.locator('[data-close="history-dialog"]').click()
         page.locator('#settings-open').click()
         expect(page.locator('#config-key')).to_have_value('')
+        page.locator('#config-url').fill('https://changed.example/v1')
+        expect(page.locator('#config-key')).to_have_attribute('required', '')
+        page.locator('#save').click()
+        expect(page.locator('#settings-dialog')).to_be_visible()
+        page.locator('#config-url').fill('https://example.com/v1')
+        assert not page.locator('#config-key').evaluate('(input) => input.required')
         page.locator('#config-model').fill('gpt-6-sol-updated')
         page.locator('#save').click()
         expect(page.locator('#settings-dialog')).not_to_be_visible()
@@ -141,6 +147,7 @@ try:
         expect(page.locator('#monitor-badge')).to_have_text('持续监测')
 
         # A different provider keeps its own URL, key, model and interval.
+        page.locator('#monitor-filter').fill('no-existing-match')
         page.locator('#monitor-add').click()
         expect(page.locator('#config-url')).to_have_value('')
         page.locator('#config-name').fill('供应商 B · 对比模型')
@@ -159,7 +166,7 @@ try:
         assert monitors.get(second_id)['enabled'] and monitors.get(third_id)['enabled']
         assert monitors.get(second_id)['interval_seconds'] == 900
         assert monitors.get(third_id)['interval_seconds'] == 3600
-        assert page.url == base + '/status'
+        assert page.url == base + '/status#monitor=' + third_id
         board_id = monitors.default_dashboard()['id']
         saved_url = base + f'/status#dashboard={board_id}&monitor={third_id}'
         assert set(monitors.get_dashboard(board_id)['monitor_ids']) == {monitor_id, second_id, third_id}
@@ -217,9 +224,66 @@ try:
         expect(legacy_page.locator('#target-model')).to_have_text(before['model'])
         expect(legacy_page.locator('#history tr[data-id]')).to_have_count(2)
         assert monitors.get(monitor_id) == before
+        expect(legacy_page.locator('.monitor-tile')).to_have_count(3)
+        legacy_page.goto(base + '/status#monitor=' + monitor_id)
+        legacy_page.reload()
+        expect(legacy_page.locator('.monitor-tile')).to_have_count(3)
+        assert len(list(backend.redis.scan_iter('modeltrace:dashboard:*'))) == 1
+        # Remember the selected monitor through reloads on the default shared panel.
+        legacy_page.locator(f'[data-action="select"][data-id="{third_id}"]').click()
+        expect(legacy_page.locator('#target-model')).to_have_text('gpt-6.1-sol')
+        legacy_page.reload()
+        expect(legacy_page.locator('#target-model')).to_have_text('gpt-6.1-sol')
+        # Failed initialization must remain retryable, including legacy migration POSTs.
+        for suffix, failed_endpoint in [('/status', '**/status/api/dashboards/default'),
+                                        ('/status#monitor=' + monitor_id, '**/status/api/dashboards')]:
+            recovery = fresh_context.new_page()
+            recovery.on('pageerror', lambda error: errors.append(str(error)))
+            recovery.route(failed_endpoint, lambda route: route.fulfill(status=503, content_type='application/json', body='{"error":"temporary outage"}'))
+            recovery.goto(base + suffix)
+            expect(recovery.locator('#notice')).to_contain_text('temporary outage')
+            expect(recovery.locator('#monitor-add')).to_be_disabled()
+            expect(recovery.locator('#refresh')).to_be_enabled()
+            recovery.unroute(failed_endpoint)
+            recovery.locator('#refresh').click()
+            expect(recovery.locator('.monitor-tile')).to_have_count(3)
+            expect(recovery.locator('#monitor-add')).to_be_enabled()
+            recovery.close()
+        # A delayed save must lock the form and must not overwrite a newly opened panel.
+        editing_page = fresh_context.new_page()
+        editing_page.on('pageerror', lambda error: errors.append(str(error)))
+        editing_page.goto(base + '/status#monitor=' + monitor_id)
+        expect(editing_page.locator('#target-model')).to_have_text(before['model'])
+        editing_page.locator('#settings-open').click()
+        editing_page.locator('#config-name').fill('保存中的名称')
+        delay_started.clear()
+        delay_release.clear()
+        delayed['id'] = monitor_id
+        editing_page.locator('#save').click()
+        assert delay_started.wait(3)
+        expect(editing_page.locator('#config-name')).to_be_disabled()
+        editing_page.keyboard.press('Escape')
+        expect(editing_page.locator('#settings-dialog')).to_be_visible()
+        isolated = monitors.create_dashboard()
+        isolated_url = base + '/status#dashboard=' + isolated['id']
+        editing_page.evaluate('(hash) => { location.hash = hash; }', '#dashboard=' + isolated['id'])
+        expect(editing_page.locator('#settings-dialog')).not_to_be_visible()
+        delay_release.set()
+        expect(editing_page.locator('#monitor-add')).to_be_enabled()
+        expect(editing_page.locator('.monitor-tile')).to_have_count(0)
+        assert editing_page.url == isolated_url
+        assert monitors.get(monitor_id)['name'] == '保存中的名称'
+        editing_page.close()
+        # Long model/provider names must not stretch tablet or mobile grids.
+        monitors.update(monitor_id, {'name': '供应商' * 26, 'model': 'long-model-' * 50})
+        legacy_page.goto(base + '/status#monitor=' + monitor_id)
+        expect(legacy_page.locator('#target-model')).to_have_text('long-model-' * 50)
+        for width in (320, 390, 768, 1024, 1440):
+            legacy_page.set_viewport_size({'width': width, 'height': 1000})
+            assert legacy_page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
         assert not errors, errors
         browser.close()
-    print('Browser integration passed: shared dashboard across browsers, /index redirect, multiple providers/models, key reuse, independent history/schedules, bookmark restore, legacy migration, search, and desktop/mobile layout.')
+    print('Browser integration passed: shared dashboard across browsers, root redirect, multiple providers/models, key reuse, independent history/schedules, bookmark restore, legacy migration, search, and desktop/mobile layout.')
     print(f'Screenshots: {output}')
 finally:
     server.shutdown()

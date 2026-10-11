@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import secrets
 from pathlib import Path
@@ -163,22 +162,7 @@ def replace_bank(bank_id: str) -> None:
 
 
 @app.get("/")
-def index():
-    summaries = {bank_id: summarized_bank(bank_id) for bank_id in BANK_CONFIGS}
-    return render_template(
-        "index.html",
-        banks=summaries,
-        bank=summaries[DEFAULT_BANK_ID],
-        unified=summarized_unified_bank(),
-        default_bank_id=DEFAULT_BANK_ID,
-        async_enabled=bool(os.getenv("REDIS_URL")),
-        auth_required=bool(os.getenv("MODELTRACE_API_TOKEN")),
-        async_only=os.getenv("ASYNC_ONLY", "false").lower() == "true",
-    )
-
-
-@app.get("/index")
-def index_redirect():
+def home():
     return redirect(url_for("status_page"))
 
 

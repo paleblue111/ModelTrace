@@ -86,12 +86,35 @@ class MonitorStore:
         return f"modeltrace:dashboard:{dashboard_id}"
 
     def create_dashboard(self, monitor_id=None):
-        if monitor_id and not self.get(monitor_id):
-            raise MonitorNotFound("原监测配置不存在")
+        if monitor_id:
+            return self.adopt_monitor(monitor_id)
         record = {"id": uuid.uuid4().hex, "created_at": time.time(),
-                  "monitor_ids": [monitor_id] if monitor_id else []}
+                  "monitor_ids": []}
         self.redis.set(self.dashboard_key(record["id"]), json.dumps(record))
         return record
+
+    def adopt_monitor(self, monitor_id):
+        """Resolve legacy bookmarks into the shared panel without duplicating panels."""
+        if not self.get(monitor_id):
+            raise MonitorNotFound("原监测配置不存在")
+        dashboard = self.default_dashboard()
+        key = self.dashboard_key(dashboard["id"])
+        while True:
+            with self.redis.pipeline() as pipe:
+                try:
+                    pipe.watch(key)
+                    dashboard = json.loads(pipe.get(key))
+                    if monitor_id in dashboard["monitor_ids"]:
+                        return dashboard
+                    if len(dashboard["monitor_ids"]) >= 100:
+                        raise ValueError("每个面板最多保存 100 个监测项")
+                    dashboard["monitor_ids"].append(monitor_id)
+                    pipe.multi()
+                    pipe.set(key, json.dumps(dashboard))
+                    pipe.execute()
+                    return dashboard
+                except WatchError:
+                    continue
 
     def get_dashboard(self, dashboard_id):
         raw = self.redis.get(self.dashboard_key(dashboard_id))
@@ -201,6 +224,10 @@ class MonitorStore:
                     if not raw:
                         return None
                     record = json.loads(raw)
+                    # Check against the watched record, including after transaction retries.
+                    # A stale editor must never send the current credential to another URL.
+                    if "url" in changes and changes["url"] != record["url"] and not changes.get("api_key"):
+                        raise ValueError("更换接口地址时请重新填写 API Key")
                     if changes.get("run_requested") and (record["active_task_id"] or record["run_requested"]):
                         raise MonitorBusy("已有检测任务，完成后再试")
                     now = time.time()

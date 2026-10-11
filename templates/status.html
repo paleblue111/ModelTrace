@@ -20,7 +20,7 @@
       <section class="page-heading"><div><div class="eyebrow">MODEL IDENTITY MONITOR</div><h1>每一次调用，都有迹可循<span>。</span></h1><p>在同一个面板，持续监测不同供应商、不同模型的真实身份。</p></div><button id="monitor-add" class="button primary" type="button" disabled>＋ 新增监测</button></section>
       <div id="notice" class="notice" role="status" hidden></div>
       <section class="panel monitor-library" aria-label="监测列表">
-        <div class="panel-heading"><div><h3>我的监测 <span id="monitor-count" class="count">0</span></h3><p id="monitor-summary">每个监测项独立配置、调度和保存结果</p></div><label class="monitor-search"><span class="sr-only">搜索监测</span><input id="monitor-filter" type="search" placeholder="搜索名称、供应商或模型"></label></div>
+        <div class="panel-heading"><div><h3>我的监测 <span id="monitor-count" class="count">0</span></h3><p id="monitor-summary">每个监测项独立配置、调度和保存结果</p></div><div class="library-tools"><button id="refresh" class="text-button" type="button">↻ 刷新</button><label class="monitor-search"><span class="sr-only">搜索监测</span><input id="monitor-filter" type="search" placeholder="搜索名称、供应商或模型"></label></div></div>
         <div id="monitor-list" class="monitor-list"><div class="empty"><strong>从添加第一个监测开始</strong><p>同一供应商的不同模型，也可以分别设置检测间隔。</p></div></div>
       </section>
       <div id="monitor-details" hidden>
@@ -45,7 +45,7 @@
         <article class="panel"><div class="panel-heading"><div><h3>候选模型</h3><p>最近一轮结果中的匹配排名</p></div><span class="label">TOP 5</span></div><div id="candidates" class="candidates"><div class="empty"><span class="empty-symbol">≋</span><strong>还没有匹配结果</strong><p>运行一次检测，查看最接近的候选模型。</p></div></div></article>
         <article class="panel"><div class="panel-heading"><div><h3>检测概况</h3><p>服务器保存的监测记录</p></div><span class="small-square">⌁</span></div><dl class="facts"><div><dt>上游接口</dt><dd id="endpoint">尚未配置</dd></div><div><dt>检测间隔</dt><dd id="interval">—</dd></div><div><dt>下一轮检测</dt><dd id="next-run">—</dd></div><div><dt>累计执行</dt><dd id="total-runs">0 次</dd></div><div><dt>最近完成</dt><dd id="last-finished">—</dd></div></dl><div class="info-note">每轮最多尝试 6 次，收集 3 份有效回答。不足 3 份时保留初步结果。</div></article>
       </section>
-      <section class="panel history-panel"><div class="panel-heading"><div><h3>检测历史 <span id="history-count" class="count">0</span></h3><p>保留最近 20 轮结果，点击一行查看详情</p></div><button id="refresh" class="text-button" type="button">↻ 刷新</button></div><div class="table-wrap"><table><thead><tr><th>检测时间</th><th>请求模型</th><th>指纹归因</th><th>概率</th><th>样本</th><th>状态</th><th>耗时</th></tr></thead><tbody id="history"><tr><td colspan="7"><div class="empty history-empty"><strong>每一轮检测，都会留下一条记录</strong><p>保存配置后，点击「立即检测」开始。</p></div></td></tr></tbody></table></div></section>
+      <section class="panel history-panel"><div class="panel-heading"><div><h3>检测历史 <span id="history-count" class="count">0</span></h3><p>保留最近 20 轮结果，点击一行查看详情</p></div></div><div class="table-wrap"><table><thead><tr><th>检测时间</th><th>请求模型</th><th>指纹归因</th><th>概率</th><th>样本</th><th>状态</th><th>耗时</th></tr></thead><tbody id="history"><tr><td colspan="7"><div class="empty history-empty"><strong>每一轮检测，都会留下一条记录</strong><p>保存配置后，点击「立即检测」开始。</p></div></td></tr></tbody></table></div></section>
       </div>
       <footer>指纹归因是参考库内的统计判断，不能作为模型身份的绝对证明。<span>CodexPRO · 持续观察，而非盲目信任</span></footer>
     </main>

@@ -24,6 +24,10 @@ let networkError = '';
 let editingId = null;
 let sourceId = null;
 let sourceUrl = '';
+const normalizedUrl = (value) => {
+  const url = value.trim().replace(/\/+$/, '');
+  return url.endsWith('/responses') ? url : url + (url.endsWith('/v1') ? '/responses' : '/v1/responses');
+};
 
 async function request(url, options = {}) {
   const controller = new AbortController();
@@ -49,7 +53,7 @@ function notice(message) {
 }
 function remember() {
   if (sharedDefault) {
-    history.replaceState(null, '', `${location.pathname}${location.search}`);
+    history.replaceState(null, '', `${location.pathname}${location.search}${monitorId ? '#monitor=' + monitorId : ''}`);
     return;
   }
   // Explicit capability links remain usable without relying on browser storage.
@@ -75,7 +79,7 @@ function renderList() {
   // Preserve keyboard focus when background polling updates list controls.
   const focused = document.activeElement?.closest('#monitor-list [data-action]');
   const focusKey = focused ? [focused.dataset.id, focused.dataset.action] : null;
-  $('monitor-list').innerHTML = visible.length ? visible.map((item) => {
+  $('monitor-list').innerHTML = !ready ? '<div class="empty"><strong>正在连接监测面板</strong><p>连接失败时可点击刷新重试。</p></div>' : visible.length ? visible.map((item) => {
     const inProgress = pending(item);
     const status = inProgress ? '检测进行中' : item.enabled ? '持续监测' : '已暂停';
     const latest = item.latest;
@@ -104,7 +108,8 @@ function render() {
   $('monitor-details').hidden = !model;
   $('connection').textContent = networkError ? '连接暂时中断' : !dashboardId ? '等待配置' : schedulerOnline ? '调度服务在线' : '调度服务离线';
   $('connection').className = `connection ${networkError ? 'error' : schedulerOnline ? 'online' : ''}`;
-  if (!model) { notice(networkError); return; }
+  $('refresh').disabled = loading || busy;
+  if (!model) { notice(networkError || (monitorId && ready ? '正在加载所选监测…' : '')); return; }
   $('selected-name').textContent = title(model);
   $('settings-open').disabled = busy || !ready;
   $('monitor-copy').disabled = busy || !ready;
@@ -149,12 +154,15 @@ function render() {
   countdown();
 }
 async function refresh() {
-  if ((!dashboardId && !sharedDefault) || loading || busy) return;
+  if (loading || busy) return;
   loading = true;
+  $('refresh').disabled = true;
   const expectedRevision = revision;
   const requestedDashboard = sharedDefault ? 'default' : dashboardId;
   try {
-    const dashboard = await request(`/status/api/dashboards/${requestedDashboard}`);
+    const dashboard = !dashboardId && monitorId
+      ? await request('/status/api/dashboards', {method:'POST', body:JSON.stringify({monitor_id:monitorId})})
+      : await request(`/status/api/dashboards/${requestedDashboard}`);
     if (expectedRevision !== revision || busy) return;
     const selected = dashboard.monitors.some((item) => item.id === monitorId) ? monitorId : dashboard.monitors[0]?.id || null;
     const fresh = selected ? await request(`/status/api/monitors/${selected}`) : null;
@@ -167,6 +175,7 @@ async function refresh() {
     if (fresh) upsert(fresh);
     remember();
     networkError = '';
+    ready = true;
     render();
   } catch (error) {
     if (expectedRevision !== revision) return;
@@ -176,6 +185,7 @@ async function refresh() {
     notice(`${error.message}。服务器上已有的监测不会因为页面断线而停止。`);
   } finally {
     loading = false;
+    $('refresh').disabled = busy;
     if (expectedRevision !== revision && !busy) refresh();
   }
 }
@@ -198,54 +208,54 @@ function openSettings(mode = 'edit') {
   $('settings-dialog').showModal();
 }
 function updateKeyHint() {
-  const reuse = sourceId && $('config-url').value.trim() === sourceUrl;
-  $('config-key').required = !editingId && !reuse;
-  $('config-key').placeholder = editingId ? '留空保留已保存的 Key' : reuse ? '留空使用该连接已保存的 Key' : '输入上游服务的 Key';
-  $('key-hint').textContent = editingId ? '已加密保存 · 留空不修改' : reuse ? '由服务器复用，不回显' : sourceId ? '更换地址需填写 Key' : '加密保存，不回显';
+  const reuse = (editingId || sourceId) && normalizedUrl($('config-url').value) === sourceUrl;
+  $('config-key').required = !reuse;
+  $('config-key').placeholder = reuse ? '留空保留已保存的 Key' : '输入此接口的 Key';
+  $('key-hint').textContent = reuse ? '由服务器保留，不回显' : (editingId || sourceId) ? '更换地址需填写新 Key' : '加密保存，不回显';
 }
-async function ensureDashboard() {
-  if (dashboardId) return;
-  const dashboard = sharedDefault ? await request('/status/api/dashboards/default') : await request('/status/api/dashboards', {method:'POST', body:'{}'});
-  dashboardId = dashboard.id;
-  remember();
+function lockSettings(locked) {
+  for (const control of $('settings-form').querySelectorAll('input, select, button')) control.disabled = locked;
 }
 async function saveSettings(event) {
   event.preventDefault();
   if (busy || !ready) return;
   busy = true;
-  revision++;
-  $('save').disabled = true;
+  const expectedRevision = ++revision;
+  lockSettings(true);
   $('settings-error').hidden = true;
   const config = {name:$('config-name').value.trim(),url:$('config-url').value.trim(),model:$('config-model').value.trim(),reasoning_effort:$('config-effort').value,interval_seconds:Number($('config-interval').value)*60};
   if ($('config-key').value || (!editingId && !sourceId)) config.key = $('config-key').value;
   if (sourceId) config.source_monitor_id = sourceId;
   render();
   try {
-    await ensureDashboard();
     const saved = await request(editingId ? `/status/api/monitors/${editingId}` : `/status/api/dashboards/${dashboardId}/monitors`, {method:editingId ? 'PATCH' : 'POST',body:JSON.stringify(config)});
+    if (expectedRevision !== revision) return;
     monitorId = saved.id;
+    $('monitor-filter').value = '';
     upsert(saved);
     remember();
     $('config-key').value = '';
     networkError = '';
     $('settings-dialog').close();
   } catch (error) {
+    if (expectedRevision !== revision) return;
     $('settings-error').textContent = error.message;
     $('settings-error').hidden = false;
-  } finally { busy = false; $('save').disabled = false; render(); }
+  } finally { busy = false; lockSettings(false); render(); if (expectedRevision !== revision) refresh(); }
 }
 async function action(kind, id = monitorId) {
   const item = monitors.find((entry) => entry.id === id);
   if (busy || !ready || !item) return;
   busy = true;
-  revision++;
+  const expectedRevision = ++revision;
   render();
   try {
     const saved = kind === 'run' ? await request(`/status/api/monitors/${id}/run`, {method:'POST',body:'{}'}) : await request(`/status/api/monitors/${id}`, {method:'PATCH',body:JSON.stringify({enabled:!item.enabled})});
+    if (expectedRevision !== revision) return;
     upsert(saved);
     networkError = '';
-  } catch (error) { networkError = error.message; }
-  finally { busy = false; render(); }
+  } catch (error) { if (expectedRevision === revision) networkError = error.message; }
+  finally { busy = false; render(); if (expectedRevision !== revision) refresh(); }
 }
 function select(id) {
   if (id === monitorId || busy || !ready) return;
@@ -282,29 +292,25 @@ $('refresh').addEventListener('click', refresh);
 $('history').addEventListener('click', (event) => { const row = event.target.closest('[data-id]'); if (row) detail(row.dataset.id); });
 $('history').addEventListener('keydown', (event) => { if (['Enter',' '].includes(event.key) && event.target.dataset.id) { event.preventDefault(); detail(event.target.dataset.id); } });
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => $(button.dataset.close).close());
+$('settings-dialog').addEventListener('cancel', (event) => { if (busy) event.preventDefault(); });
 $('settings-dialog').addEventListener('close', () => { $('config-key').value = ''; });
-async function initialize() {
-  const expectedRevision = ++revision;
+function initialize() {
+  revision++;
   ready = false;
+  monitors = [];
+  model = null;
+  schedulerOnline = false;
+  networkError = '';
+  $('settings-dialog').close();
+  $('history-dialog').close();
   const fragment = new URLSearchParams(location.hash.slice(1));
   dashboardId = fragment.get('dashboard');
   monitorId = fragment.get('monitor');
   if (!validId(dashboardId)) dashboardId = null;
   if (!validId(monitorId)) monitorId = null;
-  sharedDefault = !dashboardId && !monitorId;
-  try {
-    if (!dashboardId && monitorId) {
-      // Adopt the original single monitor without modifying its key, history or schedule.
-      const dashboard = await request('/status/api/dashboards', {method:'POST', body:JSON.stringify({monitor_id:monitorId})});
-      if (expectedRevision !== revision) return;
-      dashboardId = dashboard.id;
-      remember();
-    }
-    await refresh();
-    if (expectedRevision !== revision) return;
-    ready = true;
-  } catch (error) { if (expectedRevision !== revision) return; networkError = error.message; }
+  sharedDefault = !dashboardId;
   render();
+  refresh();
 }
 window.addEventListener('hashchange', initialize);
 initialize();

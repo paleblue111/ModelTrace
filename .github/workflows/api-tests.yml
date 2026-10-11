@@ -16,7 +16,6 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements-browser.txt
       - run: python -m pytest -q
-      - run: node --check static/app.js
       - run: node --check static/status.js
       - run: python -m playwright install --with-deps chromium
       - run: python tests/status_browser.py

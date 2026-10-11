@@ -184,9 +184,10 @@ def test_deadline_preserves_existing_sample(backend):
 def test_server_mode_disables_sync_and_mutations(client):
     for path in ("/api/test/auto", "/api/test/probe", "/api/enroll/auto", "/api/banks"):
         assert client.post(path, json={}, headers=AUTH).status_code == 409
-    page = client.get("/")
+    page = client.get("/", follow_redirects=True)
     assert page.status_code == 200
-    assert b"service-token" in page.data
+    assert b"monitor-list" in page.data
+    assert b"service-token" not in page.data
 
 
 @pytest.mark.parametrize("base,expected", [

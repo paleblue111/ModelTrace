@@ -54,11 +54,13 @@ def test_concurrent_default_creation_uses_one_monitor(backend):
     assert len(list(backend.redis.scan_iter(match='modeltrace:monitor:*'))) == 1
 
 
-def test_index_redirects_to_status(client):
-    response = client.get('/index')
+def test_home_opens_monitoring_and_old_index_is_removed(client):
+    response = client.get('/')
     assert response.status_code == 302
     assert response.headers['Location'] == '/status'
-    assert client.get('/index', follow_redirects=True).status_code == 200
+    assert client.get('/', follow_redirects=True).status_code == 200
+    assert client.get('/index').status_code == 404
+    assert client.get('/static/app.js').status_code == 404
 
 
 def test_shared_dashboard_across_browsers(client, backend):
@@ -384,3 +386,58 @@ def test_full_dashboard_does_not_create_orphan_monitors(client, backend):
     before = set(backend.redis.scan_iter('modeltrace:monitor:*'))
     assert client.post(f'/status/api/dashboards/{board}/monitors', json=CONFIG).status_code == 400
     assert set(backend.redis.scan_iter('modeltrace:monitor:*')) == before
+
+
+@pytest.mark.parametrize('url', ['https://other.example/v1', 'http://example.com/v1', 'https://example.com/other'])
+def test_edit_url_requires_new_key_without_mutating_monitor(client, backend, url):
+    record = create(client)
+    store = MonitorStore(backend)
+    before = store.get(record['id'])
+    response = client.patch('/status/api/monitors/' + record['id'], json={'url': url, 'enabled': True})
+    assert response.status_code == 400
+    assert store.get(record['id']) == before
+    assert backend.redis.zcard(DUE) == 0
+    response = client.patch('/status/api/monitors/' + record['id'], json={'url': url, 'key': 'replacement'})
+    assert response.status_code == 200
+    store.update(record['id'], {'run_requested': True})
+    store.tick(record['id'])
+    task = backend.claim()
+    assert backend.credential(task['id']) == 'replacement'
+    assert task['base_url'] == response.json['url']
+
+
+def test_equivalent_url_keeps_key_but_stale_editor_cannot_redirect_it(client, backend):
+    record = create(client)
+    url = '/status/api/monitors/' + record['id']
+    assert client.patch(url, json={'url': CONFIG['url'] + '/responses/'}).status_code == 200
+    assert client.patch(url, json={'url': 'https://new.example/v1', 'key': 'new-key'}).status_code == 200
+    # A previously opened editor still sends its original URL with no key.
+    assert client.patch(url, json={'url': CONFIG['url'], 'model': 'stale-model'}).status_code == 400
+    saved = MonitorStore(backend).get(record['id'])
+    assert saved['model'] == CONFIG['model']
+    assert backend.cipher.decrypt(saved['encrypted_key'].encode()).decode() == 'new-key'
+
+
+def test_legacy_bookmark_reuses_shared_panel_and_keeps_new_items(client, backend):
+    shared = client.get('/status/api/dashboards/default').json['id']
+    legacy = create(client)
+    before = MonitorStore(backend).get(legacy['id'])
+    assert dashboard(client, legacy['id']) == shared
+    added = add_monitor(client, shared, model='second')
+    assert dashboard(client, legacy['id']) == shared
+    assert [m['id'] for m in client.get('/status/api/dashboards/default').json['monitors']] == [legacy['id'], added['id']]
+    assert MonitorStore(backend).get(legacy['id']) == before
+    assert len(list(backend.redis.scan_iter('modeltrace:dashboard:*'))) == 1
+
+
+def test_concurrent_legacy_adoption_does_not_duplicate_or_lose_members(backend):
+    from monitor_api import validate_config
+    store = MonitorStore(backend)
+    shared = store.default_dashboard()
+    records = [store.create(validate_config(CONFIG)) for _ in range(4)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        boards = list(pool.map(lambda item: MonitorStore(backend).create_dashboard(item['id']), records * 2))
+    assert {board['id'] for board in boards} == {shared['id']}
+    ids = store.get_dashboard(shared['id'])['monitor_ids']
+    assert len(ids) == len(records)
+    assert set(ids) == {record['id'] for record in records}
