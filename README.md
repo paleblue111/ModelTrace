@@ -52,19 +52,21 @@ docker compose logs --tail=100 api worker
 
 ### 构建时依赖下载中断
 
-如果构建日志在 `pip install` 阶段出现 `Broken pipe`、`Connection broken` 或下载超时，说明下载连接中断，此时应用尚未启动。pip 的新版本提示不是错误原因。
+如果构建日志在 `pip install` 阶段出现 `Broken pipe`、`Connection broken` 或下载超时，说明下载连接中断，此时应用尚未启动。旧版 pip 还存在遇到 `ProtocolError` 时无法进入续传逻辑的问题，仅重试整轮安装可能反复失败；该问题已在 [pip 26.2 中修复](https://pip.pypa.io/en/stable/news/#v26-2)。
 
-构建现在使用 120 秒网络超时、连接重试，并对整个依赖安装最多尝试 3 次；同一次构建中已完成的下载会缓存供下一次尝试使用。持续无法连接的软件源仍需排查网络或更换源。
+Docker 构建会先升级到 pip 26.2.1，再安装依赖：使用 120 秒网络超时、5 次连接重试，并允许每个中断的下载最多续传或重启 10 次。pip 升级和依赖安装各有最多 3 次整轮尝试，同一次构建中已完成的下载会缓存供下一次尝试使用。持续无法连接的软件源仍需排查网络或更换源。
 
 先更新代码并重新构建：
 
 ```sh
-git pull --ff-only
-docker compose build api
+git pull --ff-only && \
+docker compose build api && \
 docker compose up -d --no-build
 ```
 
-API、worker 和 scheduler 共用同一个镜像，构建 `api` 一次即可。如果服务器到官方 PyPI 的连接不稳定，可在项目 `.env` 中添加或修改：
+`&&` 确保构建成功后才启动服务。若构建失败后仍执行启动命令，可能出现 `No such image: modeltrace:local` 或 `pull access denied`；这是本地镜像尚未构建成功造成的，不需要登录镜像仓库。
+
+API、worker 和 scheduler 共用同一个镜像，构建 `api` 一次即可。默认使用官方 PyPI，英国等海外服务器可保留默认源。如果服务器到官方 PyPI 的连接不稳定，可选择服务器能稳定访问的镜像源，例如在项目 `.env` 中添加或修改：
 
 ```dotenv
 PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
@@ -73,7 +75,7 @@ PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 也可以仅为本次构建指定镜像源：
 
 ```sh
-PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple docker compose build api
+PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple docker compose build api && \
 docker compose up -d --no-build
 ```
 
