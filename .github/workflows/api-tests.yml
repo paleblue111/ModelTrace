@@ -18,9 +18,6 @@ jobs:
       - run: python -m pytest -q
       - run: node --check static/app.js
       - name: Validate Compose and build image
-        env:
-          MODELTRACE_API_TOKEN: ci-placeholder
-          CREDENTIAL_ENCRYPTION_KEY: ci-placeholder
         run: |
           docker compose config --quiet
           docker compose build

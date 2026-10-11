@@ -9,7 +9,7 @@ python -m pip install -r requirements.txt
 python start.py
 ```
 
-页面地址为 `http://127.0.0.1:7860/`。
+页面地址为 `http://127.0.0.1:10001/`。
 
 ## Docker 异步服务
 
@@ -20,13 +20,23 @@ python start.py
 在安装了 Docker Compose v2 的服务器上：
 
 ```sh
-cp .env.example .env
-# 生成服务访问令牌和独立的 Fernet 加密密钥，分别填入 .env 对应项。
-python3 -c 'import secrets, base64; print("MODELTRACE_API_TOKEN=" + secrets.token_urlsafe(32)); print("CREDENTIAL_ENCRYPTION_KEY=" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
 docker compose up -d --build
 ```
 
-默认监听 `127.0.0.1:7860`，可通过反向代理提供 HTTPS。需要直接监听外部网卡时在 `.env` 中设置 `BIND_ADDRESS=0.0.0.0`。网页中的“服务访问令牌”填写 `MODELTRACE_API_TOKEN`，与上游 API Key 分开。所有 `/api/*` 请求都需要此令牌；此版本是共享令牌的可信调用方服务，不提供多租户隔离。
+首次启动会自动生成并保存两个密钥，不需要手动运行 Python 命令，也不需要预先创建 `.env`。它们的用途分别是：
+
+- **管理令牌**：仅供旧版管理接口和手动测试使用；新的 `/api` 四参数调用不需要。
+- **凭据加密密钥**：由程序内部使用，用来加密暂存在任务队列中的上游 API Key，调用方不需要填写。
+
+如需使用旧版管理接口，可以执行下面的命令查看管理令牌；普通 `/api` 调用可跳过：
+
+```sh
+docker compose exec api python runtime_config.py token
+```
+
+自动生成的密钥保存在独立的 `runtime-data` 持久卷中，API 和 worker 共用，重启不会改变。请与 `redis-data` 一起保留和备份；删除密钥卷会导致现有令牌失效、旧任务凭据无法解密。启动日志不会打印密钥。如需自定义端口、超时或密钥，再复制 `.env.example` 为 `.env` 修改即可；显式填写的密钥优先于自动生成值。
+
+默认监听 `127.0.0.1:10001`，可通过反向代理提供 HTTPS。需要直接监听外部网卡时在 `.env` 中设置 `BIND_ADDRESS=0.0.0.0`。网页的 API 自动测试只需要填写 URL、Key、模型和思考强度。旧版 `/api/*` 管理接口仍使用 `MODELTRACE_API_TOKEN`；新的 `/api` 入口不要求该令牌。
 
 Redis 不发布宿主机端口。任务和结果保存在 `redis-data` 卷；普通容器重建不会删除数据，`docker compose down -v` 会删除。AOF 每秒同步，主机突然掉电仍可能损失最近约一秒的状态；应用不会自动重试未知提交结果。
 
@@ -40,36 +50,169 @@ docker compose logs --tail=100 api worker
 
 服务器模式下指纹库只读，旧的同步上游测试、自动采集和建库写接口返回 409。在本地维护 `data/` 后重新构建并重启 API 和 worker，更新参考库；每个任务记录实际使用的 `bank_sha256`。手动测试和指纹库查看继续可用。GitHub Pages 静态站点仍为手动版本。
 
-### 异步 API
+### API 调用说明：`/api`
 
-以下示例中的 `SERVICE_TOKEN` 是你自行设置的服务访问令牌，不是上游 Key。
+**只需提供 `url`、`key`、`model`、`reasoning_effort` 四个参数，不需要管理令牌或 Authorization 请求头。** 检测是异步的：提交一次任务，获得任务 ID，再查询进度和结果。
+
+本文示例假设在部署服务器本机调用，地址为 `http://127.0.0.1:10001`。从其他机器调用时，请替换为服务器地址或反向代理域名。Docker 默认仅监听本机；需要直接通过 `http://服务器IP:10001` 访问时，先配置：
 
 ```sh
-curl -i http://127.0.0.1:7860/api/detections \
-  -H "Authorization: Bearer $SERVICE_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"base_url":"https://example.com/v1","api_key":"UPSTREAM_KEY","model":"provider-model-alias"}'
+cp .env.example .env
+# 将 .env 中的 BIND_ADDRESS 改为 0.0.0.0，并确保服务器允许访问 10001 端口。
+docker compose up -d --build
 ```
 
-返回 `202 Accepted`，包含 `id`、`status: "queued"`、`status_url` 和进度。`Location` 指向查询地址，`Retry-After: 2` 建议两秒后查询。**提交后不要为了等待结果重复 POST**，每次提交都会创建新任务并可能产生费用。提交连接中断且未获得 ID 时结果未知，此版本不提供幂等提交。
+这里的检测服务地址，与请求体中的上游模型服务 `url` 是两个不同的地址。
 
-请求字段：
-
-| 字段 | 必填 | 含义 |
+| 操作 | 方法与路由 | 参数位置 |
 |---|---|---|
-| `base_url` | 是 | 服务根地址、以 `/v1` 结尾的地址，或完整 `/responses` 地址；自动规范化到 Responses |
-| `api_key` | 是 | 上游 API Key，仅用于此任务 |
-| `model` | 是 | 上游接受的模型别名，仅用于路由，不作为识别依据 |
-| `temperature` | 否 | 0～2；默认不传，由上游使用默认值。上游不支持此参数时应省略 |
+| 提交检测 | `POST /api` | JSON 请求体中的四个参数 |
+| 查询进度或结果 | `GET /api?id=任务ID` | URL 查询参数 `id` |
+| 取消检测 | `DELETE /api?id=任务ID` | URL 查询参数 `id` |
+
+#### 1. 提交检测
+
+请求头必须包含 `Content-Type: application/json`，四个参数放在 JSON 请求体中，不要把 Key 放进 URL 查询参数。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `url` | 字符串 | 是 | **待测模型服务**的地址，支持根地址、`/v1` 或完整 `/v1/responses` 地址 |
+| `key` | 字符串 | 是 | 该模型服务的 API Key，不是 ModelTrace 管理令牌 |
+| `model` | 字符串 | 是 | 上游接受的模型名或别名，仅用于指定调用目标，不作为指纹识别依据 |
+| `reasoning_effort` | 字符串 | 是 | 思考强度，例如 `high`；可选值见下方 |
+
+`url`、`key` 和 `model` 不能为空。只接受上述四个字段；不要附加提示词、温度或其他参数，检测提示词由服务自动生成。
 
 ```sh
-# 查询：运行中与终态均返回 200。
-curl http://127.0.0.1:7860/api/detections/TASK_ID \
-  -H "Authorization: Bearer $SERVICE_TOKEN"
-# 取消：重复取消不会重新执行，也不会覆盖已有终态。
-curl -X DELETE http://127.0.0.1:7860/api/detections/TASK_ID \
-  -H "Authorization: Bearer $SERVICE_TOKEN"
+curl -i -X POST http://127.0.0.1:10001/api \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://example.com/v1",
+    "key": "替换为你的上游API Key",
+    "model": "替换为上游接受的模型名",
+    "reasoning_effort": "high"
+  }'
 ```
+
+`reasoning_effort` 支持 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。每轮原样传给 Responses 的 `reasoning.effort`。具体可用档位取决于待测模型，不支持时任务会记录上游错误，不会自动降低强度。[官方思考强度说明](https://developers.openai.com/api/docs/guides/reasoning)
+
+成功提交返回 **HTTP 202**，表示已接收任务，**不代表检测完成**。以下为省略部分字段的示例：
+
+```json
+{
+  "id": "0123456789abcdef0123456789abcdef",
+  "status": "queued",
+  "status_url": "/api?id=0123456789abcdef0123456789abcdef",
+  "progress": {"target": 3, "valid": 0, "attempted": 0, "max_attempts": 6},
+  "result": null
+}
+```
+
+保存响应中的真实 `id`，或直接用检测服务地址拼接 `status_url`。响应头也会提供 `Location` 查询路径和 `Retry-After: 2`。
+
+**提交成功后不要重复 POST 来等待结果。** 每次 POST 都会创建新任务，可能产生新的上游调用费用。如果提交时连接中断且未拿到任务 ID，提交结果未知；目前不支持幂等提交。
+
+#### 2. 查询进度和结果
+
+将下面的 ID 替换为提交响应中的真实 ID，建议每两秒查询一次：
+
+```sh
+curl 'http://127.0.0.1:10001/api?id=0123456789abcdef0123456789abcdef'
+```
+
+查询成功返回 **HTTP 200**。先读取 `status` 决定是否继续查询，再读取 `result` 获取归因结果：
+
+| `status` | 是否结束 | 含义 |
+|---|---|---|
+| `queued` | 否 | 等待 worker 执行，继续查询 |
+| `running` | 否 | 正在采样，继续查询；`progress` 显示进度 |
+| `completed` | 是 | 已获得三份有效样本，`result` 是完整结果 |
+| `partial` | 是 | 已结束但只有一至两份有效样本，`result` 是标注“样本不足”的初步结果 |
+| `failed` | 是 | 没有有效样本或排队超时，`result` 为 null |
+| `cancelled` | 是 | 任务已取消；可能保留取消前取得的结果 |
+| `interrupted` | 是 | worker 中断；可能保留中断前取得的结果，不自动重跑 |
+
+运行中的任务也可能带有初步 `result`，因此不要仅以 `result` 是否为空判断完成。**出现任一终态就停止轮询**，包括 `partial`、`failed`、`cancelled` 和 `interrupted`。
+
+完整结果示例（以下模型名称及概率仅为格式示意，不是实际测试结论；省略了其他字段和候选）：
+
+```json
+{
+  "status": "completed",
+  "reason": "target_reached",
+  "progress": {"target": 3, "valid": 3, "attempted": 3, "max_attempts": 6},
+  "preliminary": false,
+  "insufficient_samples": false,
+  "elapsed_seconds": 125.4,
+  "result": {
+    "prediction": "candidate-model-a",
+    "prediction_name": "候选模型 A",
+    "probability": 0.92,
+    "used_outputs": 3,
+    "sample_warning": null,
+    "results": [
+      {"model": "candidate-model-a", "display_name": "候选模型 A", "probability": 0.92, "profile_similarity": 0.81}
+    ]
+  }
+}
+```
+
+`result.prediction_name` 是最可能的模型，`result.results` 是按归因概率从高到低排列的候选列表。概率和相似度使用 0～1 的数值，例如 `0.92` 表示 92%。这是现有指纹库内的判断，不能当成模型真实身份的绝对证明。
+
+样本不足示例（同样省略部分字段）：
+
+```json
+{
+  "status": "partial",
+  "reason": "attempts_exhausted",
+  "progress": {"target": 3, "valid": 2, "attempted": 6, "max_attempts": 6},
+  "preliminary": true,
+  "insufficient_samples": true,
+  "result": {
+    "prediction": "candidate-model-a",
+    "prediction_name": "候选模型 A",
+    "used_outputs": 2,
+    "preliminary": true,
+    "insufficient_samples": true,
+    "sample_warning": "样本不足，当前为初步结果"
+  }
+}
+```
+
+`partial` 也是结束状态，不会在后台继续补齐三份。可通过 `errors` 查看失败轮次，通过 `reason` 查看结束原因。
+
+#### 3. 取消检测
+
+```sh
+curl -X DELETE 'http://127.0.0.1:10001/api?id=0123456789abcdef0123456789abcdef'
+```
+
+返回 HTTP 200 和当前任务状态。未结束的任务转为 `cancelled`；已结束的任务保持原有状态，重复取消不会重新执行。取消会停止后续采样，已提交给上游的请求仍可能计费。
+
+#### 4. 请求错误与任务失败
+
+| HTTP 状态码 | 含义 | 处理方式 |
+|---|---|---|
+| `202` | 提交成功 | 保存任务 ID，开始查询 |
+| `200` | 查询或取消成功 | 检查响应体的 `status`，不代表模型检测一定成功 |
+| `400` | 参数缺失、格式错误或思考强度无效 | 根据响应的 `error` 修正请求 |
+| `404` | 任务 ID 无效、任务不存在或结果已过期 | 检查 ID；默认终态结果保留 24 小时 |
+| `429` | 等待队列已满 | 按 `Retry-After` 建议稍后提交 |
+| `503` | 服务配置或 Redis 暂不可用 | 检查服务状态；查询失败时不需要重新提交任务 |
+
+接口级错误示例：
+
+```json
+{"error": "请提供四个参数：url、key、model、reasoning_effort"}
+```
+
+上游 Key 错误、模型不支持所选思考强度、上游超时等发生在**后台任务**中：提交仍可能返回 202，随后查询返回 HTTP 200，但任务为 `failed` 或 `partial`。请查看 `errors` 和 `reason`，不要只检查 HTTP 状态码。
+
+任务 ID 用于查询和取消，请仅分享给需要访问结果的人。`/api` 无需管理令牌；提交任务的人提供自己的上游 Key。旧版受保护接口创建的任务不能通过公共 `/api` 查询或取消。
+
+### 返回字段说明
+
+下方字段适用于 `/api` 和兼容接口的任务响应。
 
 主要返回字段：
 
@@ -96,7 +239,41 @@ curl -X DELETE http://127.0.0.1:7860/api/detections/TASK_ID \
 
 运行中 `result` 也可能包含已完成样本的初步结果；请根据 `status` 判断任务是否结束。归因仍为**现有候选库内的闭集判断**，不保证未收录模型能被识别为未知。
 
-参数错误返回 400，鉴权失败 401，任务不存在或结果过期 404，队列满 429，Redis 不可用 503。`GET /healthz` 无需鉴权，仅检查 API 与任务存储是否可用，不代表 worker 已上线。
+参数错误返回 400，任务不存在或结果过期 404，队列满 429，Redis 不可用 503；兼容管理接口鉴权失败时额外返回 401。`GET /healthz` 无需鉴权，仅检查 API 与任务存储是否可用，不代表 worker 已上线。
+
+### 兼容接口：`/api/detections`
+
+新接入请优先使用上面的 `/api`。以下为保留的兼容接口，参数名称和鉴权方式不同，不要与四参数入口混用。
+
+`SERVICE_TOKEN` 是自动生成或自行设置的管理令牌，不是上游 Key；可通过前文的 `runtime_config.py token` 命令查看。
+
+```sh
+curl -i http://127.0.0.1:10001/api/detections \
+  -H "Authorization: Bearer $SERVICE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"base_url":"https://example.com/v1","api_key":"UPSTREAM_KEY","model":"provider-model-alias"}'
+```
+
+返回 `202 Accepted`，包含 `id`、`status: "queued"`、`status_url` 和进度。`Location` 指向查询地址，`Retry-After: 2` 建议两秒后查询。**提交后不要为了等待结果重复 POST**，每次提交都会创建新任务并可能产生费用。提交连接中断且未获得 ID 时结果未知，此版本不提供幂等提交。
+
+请求字段：
+
+| 字段 | 必填 | 含义 |
+|---|---|---|
+| `base_url` | 是 | 服务根地址、以 `/v1` 结尾的地址，或完整 `/responses` 地址；自动规范化到 Responses |
+| `api_key` | 是 | 上游 API Key，仅用于此任务 |
+| `model` | 是 | 上游接受的模型别名，仅用于路由，不作为识别依据 |
+| `reasoning_effort` | 否 | 思考强度；取值同上，省略则使用上游默认 |
+| `temperature` | 否 | 0～2；默认不传，由上游使用默认值。上游不支持此参数时应省略 |
+
+```sh
+# 查询：运行中与终态均返回 200。
+curl http://127.0.0.1:10001/api/detections/TASK_ID \
+  -H "Authorization: Bearer $SERVICE_TOKEN"
+# 取消：重复取消不会重新执行，也不会覆盖已有终态。
+curl -X DELETE http://127.0.0.1:10001/api/detections/TASK_ID \
+  -H "Authorization: Bearer $SERVICE_TOKEN"
+```
 
 ### 长任务与凭据配置
 
@@ -114,7 +291,7 @@ curl -X DELETE http://127.0.0.1:7860/api/detections/TASK_ID \
 
 取消会阻止后续采样，并结束本地正在等待的请求进程；已到达上游的请求仍可能继续计费。worker 心跳租约为 30 秒；API 查询或存活 worker 检查到租约过期后，将任务标为 `interrupted`。正常关闭也会标记中断。排队任务在重启后继续排队，已开始但中断的任务不会自动重跑。
 
-`MODELTRACE_API_TOKEN` 与 `CREDENTIAL_ENCRYPTION_KEY` 必须独立设置且 API/worker 一致；不要把真实密钥提交到仓库。更换加密密钥前先清空等待任务，否则旧任务凭据无法解密。上游默认不能访问本机、内网和保留地址；连接使用校验后的 IP 并保留 TLS 主机校验，禁用 HTTP 重定向及环境代理，防止 Key 被重定向到其他主机。
+Docker 默认自动生成并共享 `MODELTRACE_API_TOKEN` 与 `CREDENTIAL_ENCRYPTION_KEY`，无需手动设置；自定义时也须使用两个独立密钥，且 API/worker 保持一致。不要把真实密钥提交到仓库。更换加密密钥前先清空等待任务，否则旧任务凭据无法解密。上游默认不能访问本机、内网和保留地址；连接使用校验后的 IP 并保留 TLS 主机校验，禁用 HTTP 重定向及环境代理，防止 Key 被重定向到其他主机。
 
 ### 开发与测试
 

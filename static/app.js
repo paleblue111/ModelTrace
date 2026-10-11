@@ -252,7 +252,7 @@ async function pollTask() {
   setMessage(byId("test-message"), "");
   try {
     while (true) {
-      const response = await apiFetch(`/api/detections/${encodeURIComponent(taskId)}`);
+      const response = await apiFetch(`/api?id=${encodeURIComponent(taskId)}`);
       const task = await response.json();
       if (!response.ok) {
         if (response.status === 404) {
@@ -299,10 +299,10 @@ async function testViaApi(event) {
   button.disabled = true;
   byId("result").hidden = true;
   try {
-    const response = await apiFetch("/api/detections", {
+    const response = await apiFetch("/api", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ base_url: byId("test-api-base").value, api_key: byId("test-api-key").value,
-        model: byId("test-api-model").value, temperature: optionalNumber("test-temperature") }),
+      body: JSON.stringify({ url: byId("test-api-base").value, key: byId("test-api-key").value,
+        model: byId("test-api-model").value, reasoning_effort: byId("test-reasoning-effort").value }),
     });
     const task = await response.json();
     if (!response.ok) throw new Error(task.error || "无法提交任务");
@@ -318,7 +318,7 @@ async function testViaApi(event) {
 
 async function cancelTask() {
   try {
-    const response = await apiFetch(`/api/detections/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+    const response = await apiFetch(`/api?id=${encodeURIComponent(taskId)}`, { method: "DELETE" });
     const task = await response.json();
     if (!response.ok) throw new Error(task.error || "取消失败");
     if (!polling) await pollTask();
@@ -452,7 +452,8 @@ if (window.ASYNC_ENABLED) {
   byId("resume-task").addEventListener("click", pollTask);
   byId("cancel-task").addEventListener("click", cancelTask);
   showTaskControls(Boolean(taskId));
-  if (taskId && !window.AUTH_REQUIRED) pollTask();
+  activateMode("test", "api");
+  if (taskId) pollTask();
 }
 if (window.ASYNC_ONLY) {
   byId("auto-enrollment").hidden = true;

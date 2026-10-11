@@ -306,4 +306,4 @@ def automatic_enrollment():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=7860, debug=False)
+    app.run(host="127.0.0.1", port=10001, debug=False)

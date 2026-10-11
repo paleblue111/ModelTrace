@@ -29,7 +29,7 @@
     <main class="main-content">
       {% if auth_required %}
       <section class="form-panel">
-        <label><span>服务访问令牌（与上游 API Key 不同，仅保留在当前页面）</span><input id="service-token" type="password" autocomplete="off" placeholder="MODELTRACE_API_TOKEN"></label>
+        <label><span>管理令牌（手动测试和指纹库管理使用，API 自动测试无需填写）</span><input id="service-token" type="password" autocomplete="off" placeholder="MODELTRACE_API_TOKEN"></label>
       </section>
       {% endif %}
       <section id="workspace-test" class="workspace active">
@@ -52,7 +52,11 @@
               <label><span>Base URL</span><input id="test-api-base" required placeholder="https://example.com/v1"></label>
               <label><span>接口模型名</span><input id="test-api-model" required placeholder="模型名"></label>
               <label><span>API Key</span><input id="test-api-key" type="password" required autocomplete="off"></label>
+              {% if async_enabled %}
+              <label><span>思考强度</span><select id="test-reasoning-effort"><option value="none">none</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium" selected>medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select></label>
+              {% else %}
               <label><span>温度（可选）</span><input id="test-temperature" type="number" min="0" max="2" step="0.1" placeholder="接口默认"></label>
+              {% endif %}
             </div>
             <div class="form-footer"><button class="button primary" type="submit">开始测试</button></div>
             {% if async_enabled %}<p>通过 Responses 进行异步检测。收集三份有效回答；不足三份时返回初步结果。</p>{% endif %}

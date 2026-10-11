@@ -134,6 +134,7 @@ def run_task(backend, record, probe=run_probe):
             reply = probe(backend, task_id, {
                 "base_url": record["base_url"], "api_key": api_key, "model": record["requested_model"],
                 "prompt": challenge["prompt"], "temperature": record["temperature"],
+                "reasoning_effort": record.get("reasoning_effort"),
                 "timeout": min(backend.request_timeout, max(0.1, record["deadline"] - time.time())),
             }, record["deadline"])
             if reply is None:

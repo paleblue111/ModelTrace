@@ -66,7 +66,7 @@ def connect_upstream(parts, timeout: float):
 
 def request_response(base_url: str, api_key: str, model: str, prompt: str,
                      temperature: float | None = None, system_prompt: str = "",
-                     timeout: float = 240) -> dict:
+                     timeout: float = 240, reasoning_effort: str | None = None) -> dict:
     parts = urlsplit(responses_url(base_url))
     body = {"model": model, "input": [{"role": "user", "content": prompt}],
             "store": False, "stream": False}
@@ -74,6 +74,8 @@ def request_response(base_url: str, api_key: str, model: str, prompt: str,
         body["instructions"] = system_prompt
     if temperature is not None:
         body["temperature"] = temperature
+    if reasoning_effort is not None:
+        body["reasoning"] = {"effort": reasoning_effort}
     connection = None
     try:
         connection = connect_upstream(parts, timeout)

@@ -64,6 +64,8 @@ class DetectionStore:
             "deadline": None, "lease_until": now + self.queue_timeout,
             "base_url": config["base_url"], "requested_model": config["model"],
             "temperature": config.get("temperature"),
+            "reasoning_effort": config.get("reasoning_effort"),
+            "public_access": config.get("public_access", False),
             "progress": {"target": 3, "valid": 0, "attempted": 0, "max_attempts": 6},
             "errors": [], "result": None, "samples": [], "reason": None,
             "preliminary": False, "insufficient_samples": True,
@@ -187,7 +189,7 @@ class DetectionStore:
 
 
 def public_record(record):
-    hidden = {"queue_deadline", "deadline", "lease_until"}
+    hidden = {"queue_deadline", "deadline", "lease_until", "public_access"}
     result = {key: value for key, value in record.items() if key not in hidden}
     start = record["started_at"]
     result["elapsed_seconds"] = round((record["finished_at"] or time.time()) - start, 2) if start else 0

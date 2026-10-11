@@ -10,10 +10,12 @@ x-common: &common
     - no-new-privileges:true
   cap_drop:
     - ALL
+  volumes:
+    - runtime-data:/app/runtime
   environment: &environment
     REDIS_URL: redis://redis:6379/0
-    MODELTRACE_API_TOKEN: ${MODELTRACE_API_TOKEN:?Set MODELTRACE_API_TOKEN in .env}
-    CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?Set CREDENTIAL_ENCRYPTION_KEY in .env}
+    MODELTRACE_API_TOKEN: ${MODELTRACE_API_TOKEN:-}
+    CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
     REQUIRE_API_AUTH: "true"
     ASYNC_ONLY: "true"
     REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-240}
@@ -31,9 +33,9 @@ services:
   api:
     <<: *common
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-7860}:7860"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-10001}:10001"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10001/healthz', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -55,3 +57,4 @@ services:
 
 volumes:
   redis-data:
+  runtime-data:

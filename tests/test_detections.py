@@ -339,3 +339,40 @@ def test_hostname_allowlist(backend, monkeypatch):
     assert responses_url("https://api.example.com") == "https://api.example.com/v1/responses"
     with pytest.raises(ValueError, match="UPSTREAM_ALLOWED_HOSTS"):
         responses_url("https://api.example.com.evil.test")
+
+
+def test_simple_api_four_fields_end_to_end(client, backend, upstream):
+    url, handler = upstream
+    response = client.post('/api', json={"url": url, "key": "upstream-secret", "model": "alias", "reasoning_effort": "high"})
+    assert response.status_code == 202
+    task_id = response.json['id']
+    assert response.headers['Location'] == f'/api?id={task_id}'
+    assert 'upstream-secret' not in response.text
+    assert 'public_access' not in response.text
+    worker.run_task(backend, backend.claim())
+    result = client.get(response.headers['Location'])
+    assert result.status_code == 200
+    assert result.json['status'] == 'completed'
+    assert result.json['reasoning_effort'] == 'high'
+    assert len(handler.requests) == 3
+    assert all(body['reasoning'] == {"effort": "high"} for _, body, _ in handler.requests)
+    assert result.headers['Cache-Control'] == 'no-store'
+
+
+def test_simple_api_cancel_and_private_task_isolation(client, backend):
+    private = backend.submit(CONFIG)
+    assert client.get(f"/api?id={private['id']}").status_code == 404
+    assert client.delete(f"/api?id={private['id']}").status_code == 404
+    response = client.post('/api', json={"url": CONFIG['base_url'], "key": CONFIG['api_key'], "model": "alias", "reasoning_effort": "medium"})
+    assert client.delete(response.json['status_url']).json['status'] == 'cancelled'
+    assert client.get('/api').status_code == 404
+
+
+@pytest.mark.parametrize('effort', [None, '', 'invalid', 3, [], {}])
+def test_simple_api_rejects_invalid_effort(client, effort):
+    assert client.post('/api', json={"url": CONFIG['base_url'], "key": CONFIG['api_key'], "model": "alias", "reasoning_effort": effort}).status_code == 400
+
+
+def test_simple_api_requires_only_documented_fields(client):
+    assert client.post('/api', json=CONFIG).status_code == 400
+    assert client.post('/api', json={"url": CONFIG['base_url'], "key": CONFIG['api_key'], "model": "alias"}).status_code == 400
