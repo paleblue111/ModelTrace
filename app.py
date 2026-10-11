@@ -15,10 +15,12 @@ from bank_builder import build_bank, read_rows
 
 
 from detection_api import api as detection_api
+from monitor_api import api as monitor_api
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 app.register_blueprint(detection_api)
+app.register_blueprint(monitor_api)
 PROJECT = Path(__file__).resolve().parent
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
 UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
@@ -173,6 +175,11 @@ def index():
         auth_required=bool(os.getenv("MODELTRACE_API_TOKEN")),
         async_only=os.getenv("ASYNC_ONLY", "false").lower() == "true",
     )
+
+
+@app.get("/status")
+def status_page():
+    return render_template("status.html")
 
 
 @app.get("/api/challenges")

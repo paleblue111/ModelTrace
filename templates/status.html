@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>模型监测 · ModelTrace</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='status.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/status"><span class="brand-symbol">M<span>↗</span></span>ModelTrace</a>
+    <div class="nav-caption">WORKSPACE</div>
+    <a class="nav-item selected" href="/status"><span>◉</span>模型监测<span class="nav-dot"></span></a>
+    <a class="nav-item" href="/"><span>⊞</span>指纹测试工具<span class="arrow">↗</span></a>
+    <div class="sidebar-bottom"><span class="server-dot"></span>服务器持续监测<p>关闭页面，检测仍会继续。</p><span class="version">MODELTRACE / RESPONSES API</span></div>
+  </aside>
+  <div class="page">
+    <header class="topbar"><span>工作区 <b>/</b> <strong>模型监测</strong></span><span id="connection" class="connection">等待配置</span></header>
+    <main>
+      <section class="page-heading"><div><div class="eyebrow">MODEL IDENTITY MONITOR</div><h1>每一次调用，都有迹可循<span>。</span></h1><p>定期提取模型指纹，对照参考库，持续观察接口背后的模型。</p></div><button id="settings-open" class="button secondary" type="button">⚙ 连接设置</button></section>
+      <div id="notice" class="notice" role="status" hidden></div>
+      <section class="overview">
+        <article class="monitor-card">
+          <div class="card-heading"><span class="eyebrow">监测状态</span><span id="monitor-badge" class="badge neutral">未配置</span></div>
+          <h2 id="monitor-title">从连接一个模型开始</h2>
+          <p id="monitor-detail">设置接口地址与 Key，开启你的第一次模型身份检测。</p>
+          <div class="target-row"><span class="target-icon">↗</span><div><span>请求模型</span><strong id="target-model">尚未设置</strong></div><div class="target-effort"><span>思考强度</span><strong id="target-effort">—</strong></div></div>
+          <div class="monitor-actions"><button id="toggle" class="button primary" type="button" disabled>开启定时监测</button><button id="run" class="button secondary" type="button" disabled>立即检测</button></div>
+          <div class="schedule-line"><span class="server-dot"></span><span id="schedule">配置后由服务器自动执行</span></div>
+        </article>
+        <article class="result-card">
+          <div class="card-heading"><span class="eyebrow">最新归因结果</span><span id="result-badge" class="badge neutral">等待检测</span></div>
+          <div class="result-content"><div class="fingerprint" aria-hidden="true"><svg viewBox="0 0 84 84" fill="none"><path d="M18 42a24 24 0 0 1 48 0c0 15-3 25-8 32M25 43a17 17 0 1 1 34 0c0 17-4 26-8 33M33 44a9 9 0 0 1 18 0c0 17-4 25-8 32M42 43c0 14-2 24-7 29M17 53c0 7-2 11-4 15M25 53c0 11-3 17-6 22M33 54c0 10-2 17-5 22M10 36a33 33 0 0 1 63 0M9 45l-1 12M74 45c0 10-1 16-3 22" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg></div><div><span class="muted">最可能的模型</span><h2 id="prediction">等待第一份指纹</h2><p id="result-note">完成检测后，模型归因结果将显示在这里。</p></div></div>
+          <div class="result-metrics"><div><span>库内归因概率</span><strong id="probability">—</strong></div><div><span>有效样本</span><strong id="samples">—<small> / 3</small></strong></div><div><span>检测耗时</span><strong id="duration">—</strong></div></div>
+        </article>
+      </section>
+      <section id="active-panel" class="active-panel" hidden aria-live="polite"><div><span class="spinner"></span><strong id="active-title">正在检测</strong><span id="active-detail"></span></div><progress id="active-progress" max="3" value="0"></progress><small>同一监测不会重叠运行。暂停定时监测不会取消当前检测。</small></section>
+      <section class="details-grid">
+        <article class="panel"><div class="panel-heading"><div><h3>候选模型</h3><p>最近一轮结果中的匹配排名</p></div><span class="label">TOP 5</span></div><div id="candidates" class="candidates"><div class="empty"><span class="empty-symbol">≋</span><strong>还没有匹配结果</strong><p>运行一次检测，查看最接近的候选模型。</p></div></div></article>
+        <article class="panel"><div class="panel-heading"><div><h3>检测概况</h3><p>服务器保存的监测记录</p></div><span class="small-square">⌁</span></div><dl class="facts"><div><dt>上游接口</dt><dd id="endpoint">尚未配置</dd></div><div><dt>检测间隔</dt><dd id="interval">—</dd></div><div><dt>下一轮检测</dt><dd id="next-run">—</dd></div><div><dt>累计执行</dt><dd id="total-runs">0 次</dd></div><div><dt>最近完成</dt><dd id="last-finished">—</dd></div></dl><div class="info-note">每轮最多尝试 6 次，收集 3 份有效回答。不足 3 份时保留初步结果。</div></article>
+      </section>
+      <section class="panel history-panel"><div class="panel-heading"><div><h3>检测历史 <span id="history-count" class="count">0</span></h3><p>保留最近 20 轮结果，点击一行查看详情</p></div><button id="refresh" class="text-button" type="button">↻ 刷新</button></div><div class="table-wrap"><table><thead><tr><th>检测时间</th><th>请求模型</th><th>指纹归因</th><th>概率</th><th>样本</th><th>状态</th><th>耗时</th></tr></thead><tbody id="history"><tr><td colspan="7"><div class="empty history-empty"><strong>每一轮检测，都会留下一条记录</strong><p>保存配置后，点击「立即检测」开始。</p></div></td></tr></tbody></table></div></section>
+      <footer>指纹归因是参考库内的统计判断，不能作为模型身份的绝对证明。<span>ModelTrace · 持续观察，而非盲目信任</span></footer>
+    </main>
+  </div>
+  <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">CONNECTION SETTINGS</span><h2>连接设置</h2></div><button class="icon-button" type="button" data-close="settings-dialog" aria-label="关闭设置">×</button></div><p class="dialog-intro">配置保存在服务器，定时检测不依赖浏览器在线。</p><label>接口地址 <span>URL</span><input id="config-url" type="url" placeholder="https://api.example.com/v1" required></label><label>API Key <span id="key-hint">加密保存，不回显</span><input id="config-key" type="password" autocomplete="new-password" placeholder="输入上游服务的 Key" required></label><label>模型名称<input id="config-model" placeholder="上游接受的模型名或别名" required></label><div class="form-row"><label>思考强度<select id="config-effort"><option>none</option><option>minimal</option><option>low</option><option selected>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label><label>检测间隔（分钟）<input id="config-interval" type="number" min="1" max="10080" step="1" value="30" required></label></div><p class="form-help">间隔从上一轮结束后开始计算。每轮使用你的上游 Key，可能产生模型调用费用。</p><p id="settings-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button class="button secondary" type="button" data-close="settings-dialog">取消</button><button id="save" class="button primary" type="submit">保存配置</button></div></form></dialog>
+  <dialog id="history-dialog"><div class="dialog-heading"><h2>检测详情</h2><button class="icon-button" type="button" data-close="history-dialog" aria-label="关闭详情">×</button></div><div id="history-detail"></div></dialog>
+  <script type="module" src="{{ url_for('static', filename='status.js') }}"></script>
+</body>
+</html>

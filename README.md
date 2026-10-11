@@ -13,7 +13,7 @@ python start.py
 
 ## Docker 异步服务
 
-服务包含 Flask/Gunicorn API、独立 worker 和带 AOF 持久化的 Redis。每个 worker 同时执行一个任务，任务使用现有统一指纹库和归因算法。浏览器自动测试入口也会提交异步任务。
+服务包含 Flask/Gunicorn API、独立 worker、服务器定时调度器和带 AOF 持久化的 Redis。每个 worker 同时执行一个任务，任务使用现有统一指纹库和归因算法。浏览器自动测试入口也会提交异步任务。
 
 ### 启动
 
@@ -49,6 +49,30 @@ docker compose logs --tail=100 api worker
 ```
 
 服务器模式下指纹库只读，旧的同步上游测试、自动采集和建库写接口返回 409。在本地维护 `data/` 后重新构建并重启 API 和 worker，更新参考库；每个任务记录实际使用的 `bank_sha256`。手动测试和指纹库查看继续可用。GitHub Pages 静态站点仍为手动版本。
+
+### 可视化监测页面：`/status`
+
+部署后打开 **`http://服务器地址:10001/status`**。在部署服务器本机访问时使用 `http://127.0.0.1:10001/status`；远程直连需要按前文设置 `BIND_ADDRESS=0.0.0.0`，也可以使用反向代理域名。
+
+1. 点击右上角「连接设置」，填写上游 URL、API Key、模型、思考强度和检测间隔（1 分钟～7 天）。
+2. 点击「保存配置」。保存不会自动产生模型调用；API Key 加密保存在服务器，之后编辑时留空即可保留原 Key。
+3. 点击「立即检测」执行一轮，或点击「开启定时监测」让服务器立即执行第一轮并持续检测。
+4. 页面会展示当前进度、最新模型归因、候选排名、下一轮时间和最近 20 轮历史；点击历史行查看样本不足提示、失败原因和指纹库版本。
+
+**关闭浏览器后，定时检测仍会继续。** 调度由 Docker 中的 `scheduler` 服务执行，页面只读取状态。每个监测同一时间最多运行一轮，下一轮从上一轮结束被调度器确认后开始计算间隔。暂停只停止后续定时检测，当前检测仍会完成；在暂停状态下仍可以点击「立即检测」执行单次任务。重启后配置、开关和历史记录会保留，不会补跑停机期间错过的多轮任务。
+
+每个监测配置都有独立的随机 ID。页面地址会变为 `/status#monitor=配置ID`，可以收藏此地址，在其他浏览器打开同一个监测。本浏览器也会记住该 ID；浏览器不保存上游 Key。**持有此链接的人可以查看结果、修改配置和启停监测，请妥善保管。** 页面不提供所有监测配置的公开列表。
+
+定时监测的上游 Key 需长期加密保存在 Redis，供后续检测使用；每轮任务仍使用独立的临时凭据。保留 `redis-data` 和 `runtime-data` 两个卷才能在重启后恢复。每轮最多调用上游六次，持续监测会持续消耗上游额度。
+
+若页面显示「调度服务离线」，检查：
+
+```sh
+docker compose ps
+docker compose logs --tail=100 scheduler worker
+```
+
+本地开发时，除了 API 和 worker，还需要运行 `python monitor_scheduler.py`，且三个进程使用相同的 Redis 地址和加密密钥。
 
 ### API 调用说明：`/api`
 
@@ -299,6 +323,16 @@ Docker 默认自动生成并共享 `MODELTRACE_API_TOKEN` 与 `CREDENTIAL_ENCRYP
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```
+
+可选的页面集成测试会启动本机测试服务，使用模拟模型响应验证设置、定时监测、关闭页面后执行，以及桌面/手机布局：
+
+```sh
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python tests/status_browser.py
+```
+
+截图默认输出到 `/tmp/modeltrace-status-preview`，可用 `STATUS_SCREENSHOT_DIR` 修改输出目录。
 
 测试使用模拟 Redis 和本机模拟 Responses 服务，不消耗真实模型额度。完整异步运行需启动 Redis，设置与 Compose 相同的令牌、加密密钥及 `REDIS_URL`，然后分别运行 `python start.py` 和 `python detection_worker.py`。没有 `REDIS_URL` 时，本地网页沿用同步测试流程（同样只用 Responses）。
 

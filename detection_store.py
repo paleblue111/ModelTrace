@@ -54,7 +54,7 @@ class DetectionStore:
         value = self.redis.get(self.key(task_id))
         return json.loads(value) if value else None
 
-    def submit(self, config):
+    def prepare(self, config):
         now = time.time()
         task_id = uuid.uuid4().hex
         record = {
@@ -72,7 +72,18 @@ class DetectionStore:
             "bank_sha256": None,
         }
         encrypted = self.cipher.encrypt(config["api_key"].encode()).decode()
+        return record, encrypted
+
+    def enqueue(self, pipe, record, encrypted):
+        task_id = record["id"]
         ttl = self.retention + self.queue_timeout + self.task_timeout
+        pipe.set(self.key(task_id), json.dumps(record), ex=ttl)
+        pipe.set(self.credential_key(task_id), encrypted, ex=self.queue_timeout + self.task_timeout)
+        pipe.rpush(QUEUE, task_id)
+        pipe.zadd(LEASES, {task_id: record["lease_until"]})
+
+    def submit(self, config):
+        record, encrypted = self.prepare(config)
         while True:
             with self.redis.pipeline() as pipe:
                 try:
@@ -80,10 +91,7 @@ class DetectionStore:
                     if pipe.llen(QUEUE) >= self.queue_limit:
                         raise QueueFull("检测队列已满，请稍后重试")
                     pipe.multi()
-                    pipe.set(self.key(task_id), json.dumps(record), ex=ttl)
-                    pipe.set(self.credential_key(task_id), encrypted, ex=self.queue_timeout + self.task_timeout)
-                    pipe.rpush(QUEUE, task_id)
-                    pipe.zadd(LEASES, {task_id: record["lease_until"]})
+                    self.enqueue(pipe, record, encrypted)
                     pipe.execute()
                     return record
                 except WatchError:

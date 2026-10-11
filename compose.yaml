@@ -43,6 +43,10 @@ services:
     <<: *common
     command: ["python", "detection_worker.py"]
     stop_grace_period: 10s
+  scheduler:
+    <<: *common
+    command: ["python", "monitor_scheduler.py"]
+    stop_grace_period: 5s
   redis:
     image: redis:7-alpine
     restart: unless-stopped
