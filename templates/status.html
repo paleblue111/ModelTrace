@@ -4,16 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>模型监测 · ModelTrace</title>
+  <title>模型监测 · CodexPRO</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='status.css') }}">
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="/status"><span class="brand-symbol">M<span>↗</span></span>ModelTrace</a>
+    <a class="brand" href="/status"><span class="brand-symbol" aria-hidden="true">C<span>↗</span></span>CodexPRO</a>
     <div class="nav-caption">WORKSPACE</div>
     <a class="nav-item selected" href="/status"><span>◉</span>模型监测<span class="nav-dot"></span></a>
-    <a class="nav-item" href="/"><span>⊞</span>指纹测试工具<span class="arrow">↗</span></a>
-    <div class="sidebar-bottom"><span class="server-dot"></span>服务器持续监测<p>关闭页面，检测仍会继续。</p><span class="version">MODELTRACE / RESPONSES API</span></div>
+    <div class="sidebar-bottom"><span class="server-dot"></span>服务器持续监测<p>关闭页面，检测仍会继续。</p><span class="version">CodexPRO / RESPONSES API</span></div>
   </aside>
   <div class="page">
     <header class="topbar"><span>工作区 <b>/</b> <strong>模型监测</strong></span><span id="connection" class="connection">等待配置</span></header>
@@ -41,7 +40,7 @@
         <article class="panel"><div class="panel-heading"><div><h3>检测概况</h3><p>服务器保存的监测记录</p></div><span class="small-square">⌁</span></div><dl class="facts"><div><dt>上游接口</dt><dd id="endpoint">尚未配置</dd></div><div><dt>检测间隔</dt><dd id="interval">—</dd></div><div><dt>下一轮检测</dt><dd id="next-run">—</dd></div><div><dt>累计执行</dt><dd id="total-runs">0 次</dd></div><div><dt>最近完成</dt><dd id="last-finished">—</dd></div></dl><div class="info-note">每轮最多尝试 6 次，收集 3 份有效回答。不足 3 份时保留初步结果。</div></article>
       </section>
       <section class="panel history-panel"><div class="panel-heading"><div><h3>检测历史 <span id="history-count" class="count">0</span></h3><p>保留最近 20 轮结果，点击一行查看详情</p></div><button id="refresh" class="text-button" type="button">↻ 刷新</button></div><div class="table-wrap"><table><thead><tr><th>检测时间</th><th>请求模型</th><th>指纹归因</th><th>概率</th><th>样本</th><th>状态</th><th>耗时</th></tr></thead><tbody id="history"><tr><td colspan="7"><div class="empty history-empty"><strong>每一轮检测，都会留下一条记录</strong><p>保存配置后，点击「立即检测」开始。</p></div></td></tr></tbody></table></div></section>
-      <footer>指纹归因是参考库内的统计判断，不能作为模型身份的绝对证明。<span>ModelTrace · 持续观察，而非盲目信任</span></footer>
+      <footer>指纹归因是参考库内的统计判断，不能作为模型身份的绝对证明。<span>CodexPRO · 持续观察，而非盲目信任</span></footer>
     </main>
   </div>
   <dialog id="settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">CONNECTION SETTINGS</span><h2>连接设置</h2></div><button class="icon-button" type="button" data-close="settings-dialog" aria-label="关闭设置">×</button></div><p class="dialog-intro">配置保存在服务器，定时检测不依赖浏览器在线。</p><label>接口地址 <span>URL</span><input id="config-url" type="url" placeholder="https://api.example.com/v1" required></label><label>API Key <span id="key-hint">加密保存，不回显</span><input id="config-key" type="password" autocomplete="new-password" placeholder="输入上游服务的 Key" required></label><label>模型名称<input id="config-model" placeholder="上游接受的模型名或别名" required></label><div class="form-row"><label>思考强度<select id="config-effort"><option>none</option><option>minimal</option><option>low</option><option selected>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label><label>检测间隔（分钟）<input id="config-interval" type="number" min="1" max="10080" step="1" value="30" required></label></div><p class="form-help">间隔从上一轮结束后开始计算。每轮使用你的上游 Key，可能产生模型调用费用。</p><p id="settings-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button class="button secondary" type="button" data-close="settings-dialog">取消</button><button id="save" class="button primary" type="submit">保存配置</button></div></form></dialog>
