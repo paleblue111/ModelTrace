@@ -6,13 +6,23 @@ const pct = (value) => typeof value === 'number' ? `${(value * 100).toFixed(1)}%
 const duration = (value) => typeof value !== 'number' ? '—' : value < 60 ? `${Math.round(value)} 秒` : `${Math.floor(value / 60)} 分 ${Math.round(value % 60)} 秒`;
 const date = (value) => value ? new Date(value * 1000).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
 const badge = (status) => ['completed'].includes(status) ? 'success' : ['partial','interrupted'].includes(status) ? 'warning' : status === 'failed' ? 'danger' : 'neutral';
-let monitorId = new URLSearchParams(location.hash.slice(1)).get('monitor');
-try { monitorId ||= localStorage.getItem('modeltrace-monitor'); } catch { /* storage is optional */ }
-if (monitorId && !/^[0-9a-f]{32}$/.test(monitorId)) monitorId = null;
+const validId = (id) => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id);
+const title = (item) => item.name || item.model;
+const pending = (item) => Boolean(item.active_task_id || item.run_requested);
+const emptyHistory = $('history').innerHTML;
+let dashboardId = null;
+let monitorId = null;
+let monitors = [];
+let schedulerOnline = false;
 let model = null;
 let busy = false;
 let loading = false;
+let ready = false;
+let revision = 0;
 let networkError = '';
+let editingId = null;
+let sourceId = null;
+let sourceUrl = '';
 
 async function request(url, options = {}) {
   const controller = new AbortController();
@@ -36,11 +46,41 @@ function notice(message) {
   $('notice').textContent = message;
   $('notice').hidden = !message;
 }
-function remember(id) {
-  monitorId = id;
-  try { localStorage.setItem('modeltrace-monitor', id); } catch { /* ID is also in the address */ }
-  // The capability ID stays in the fragment, which is not sent as a Referer.
-  history.replaceState(null, '', `${location.pathname}#monitor=${id}`);
+function remember() {
+  try {
+    if (dashboardId) localStorage.setItem('modeltrace-dashboard', dashboardId);
+    if (monitorId) localStorage.setItem('modeltrace-monitor', monitorId);
+    else localStorage.removeItem('modeltrace-monitor');
+  } catch { /* IDs are also in the address; credentials never enter storage. */ }
+  const fragment = new URLSearchParams();
+  if (dashboardId) fragment.set('dashboard', dashboardId);
+  if (monitorId) fragment.set('monitor', monitorId);
+  history.replaceState(null, '', `${location.pathname}${location.search}${fragment.size ? '#' + fragment : ''}`);
+}
+function upsert(saved) {
+  const latest = saved.history[0];
+  const summary = {...saved, latest:latest ? {...latest, prediction_name:latest.result?.prediction_name, probability:latest.result?.probability, valid_samples:latest.progress.valid} : null};
+  const index = monitors.findIndex((item) => item.id === saved.id);
+  if (index < 0) monitors.push(summary); else monitors[index] = summary;
+  if (saved.id === monitorId) model = saved;
+  schedulerOnline = saved.scheduler_online;
+}
+function renderList() {
+  $('monitor-add').disabled = busy || !ready;
+  $('monitor-count').textContent = monitors.length;
+  $('monitor-summary').textContent = monitors.length ? `${monitors.filter((item) => item.enabled).length} 个已开启 · ${monitors.filter(pending).length} 个待完成 · 点击卡片查看独立结果` : '每个监测项独立配置、调度和保存结果';
+  const query = $('monitor-filter').value.trim().toLowerCase();
+  const visible = monitors.filter((item) => `${item.name || ''} ${item.url} ${item.model}`.toLowerCase().includes(query));
+  // Preserve keyboard focus when background polling updates list controls.
+  const focused = document.activeElement?.closest('#monitor-list [data-action]');
+  const focusKey = focused ? [focused.dataset.id, focused.dataset.action] : null;
+  $('monitor-list').innerHTML = visible.length ? visible.map((item) => {
+    const inProgress = pending(item);
+    const status = inProgress ? '检测进行中' : item.enabled ? '持续监测' : '已暂停';
+    const latest = item.latest;
+    return `<article class="monitor-tile ${item.id === monitorId ? 'selected' : ''}" data-monitor-id="${escape(item.id)}"><button type="button" class="monitor-select" data-action="select" data-id="${escape(item.id)}" aria-pressed="${item.id === monitorId}"><span class="tile-heading"><strong>${escape(title(item))}</strong><span class="badge ${item.enabled ? 'success' : 'neutral'}">${status}</span></span><span class="tile-provider">${escape(item.url)}</span><span class="tile-model">${escape(item.model)} · ${escape(item.reasoning_effort)} · 每 ${item.interval_seconds/60} 分钟</span><span class="tile-result">${latest ? `<b>${escape(latest.prediction_name || labels[latest.status] || '暂无归因')}</b> · ${pct(latest.probability)}<br>${escape(labels[latest.status] || '未知')} · 样本 ${latest.valid_samples}/3 · ${escape(date(latest.finished_at))}` : '等待第一轮检测<br>结果与历史独立保存'}</span></button><div class="tile-actions"><button type="button" class="button secondary" data-action="run" data-id="${escape(item.id)}" ${busy || inProgress || !ready ? 'disabled' : ''}>立即检测</button><button type="button" class="button ${item.enabled ? 'secondary' : 'primary'}" data-action="toggle" data-id="${escape(item.id)}" ${busy || !ready ? 'disabled' : ''}>${item.enabled ? '暂停监测' : '开启监测'}</button></div></article>`;
+  }).join('') : `<div class="empty"><strong>${monitors.length ? '没有找到匹配的监测' : '从添加第一个监测开始'}</strong><p>${monitors.length ? '试试其他名称、供应商地址或模型名。' : '点击「新增监测」，分别添加不同供应商和模型。'}</p></div>`;
+  if (focusKey) $('monitor-list').querySelector(`[data-id="${focusKey[0]}"][data-action="${focusKey[1]}"]`)?.focus({preventScroll:true});
 }
 function renderCandidates(result, target = $('candidates')) {
   if (!result?.results?.length) {
@@ -59,13 +99,18 @@ function countdown() {
   } else $('next-run').textContent = '已暂停';
 }
 function render() {
-  if (!model) return;
+  renderList();
+  $('monitor-details').hidden = !model;
+  $('connection').textContent = networkError ? '连接暂时中断' : !dashboardId ? '等待配置' : schedulerOnline ? '调度服务在线' : '调度服务离线';
+  $('connection').className = `connection ${networkError ? 'error' : schedulerOnline ? 'online' : ''}`;
+  if (!model) { notice(networkError); return; }
+  $('selected-name').textContent = title(model);
+  $('settings-open').disabled = busy || !ready;
+  $('monitor-copy').disabled = busy || !ready;
   const active = model.active_task;
   const latest = model.history[0];
   const result = latest?.result;
   const pending = Boolean(model.active_task_id || model.run_requested);
-  $('connection').textContent = networkError ? '连接暂时中断' : model.scheduler_online ? '调度服务在线' : '调度服务离线';
-  $('connection').className = `connection ${!networkError && model.scheduler_online ? 'online' : 'error'}`;
   $('monitor-badge').textContent = model.enabled ? '持续监测' : '已暂停';
   $('monitor-badge').className = `badge ${model.enabled ? 'success' : 'neutral'}`;
   $('monitor-title').textContent = pending ? '正在收集模型指纹' : model.enabled ? '监测已开启' : '随时开始下一次检测';
@@ -73,8 +118,8 @@ function render() {
   $('target-model').textContent = model.model;
   $('target-effort').textContent = model.reasoning_effort;
   $('toggle').textContent = model.enabled ? '暂停定时监测' : '开启定时监测';
-  $('toggle').disabled = busy;
-  $('run').disabled = busy || pending;
+  $('toggle').disabled = busy || !ready;
+  $('run').disabled = busy || pending || !ready;
   $('run').textContent = pending ? '检测进行中' : '立即检测';
   $('schedule').textContent = model.enabled ? `每轮结束 ${model.interval_seconds/60} 分钟后自动检测 · 服务器执行` : '定时监测已暂停，当前任务仍会完成';
   $('endpoint').textContent = model.url;
@@ -96,52 +141,89 @@ function render() {
   $('history-count').textContent = model.history.length;
   if (model.history.length) {
     $('history').innerHTML = model.history.map((item) => `<tr data-id="${escape(item.id)}" tabindex="0" role="button" aria-label="查看 ${escape(date(item.finished_at))} 的检测详情"><td>${escape(date(item.finished_at))}</td><td>${escape(item.requested_model)}</td><td>${escape(item.result?.prediction_name || '—')}</td><td>${pct(item.result?.probability)}</td><td>${item.progress.valid} / 3</td><td><span class="badge ${badge(item.status)}">${labels[item.status] || '未知'}</span></td><td>${duration(item.elapsed_seconds)}</td></tr>`).join('');
-  }
+  } else $('history').innerHTML = emptyHistory;
   const warnings = [networkError, model.last_error];
-  if (!model.scheduler_online) warnings.push('调度服务暂未在线，检查 Docker 中的 scheduler 服务。页面不会替代服务器发起定时检测。');
+  if (!schedulerOnline) warnings.push('调度服务暂未在线，检查 Docker 中的 scheduler 服务。页面不会替代服务器发起定时检测。');
   notice(warnings.filter(Boolean).join('；'));
   countdown();
 }
 async function refresh() {
-  if (!monitorId || loading || busy) return;
+  if (!dashboardId || loading || busy) return;
   loading = true;
+  const expectedRevision = revision;
+  const requestedDashboard = dashboardId;
   try {
-    const fresh = await request(`/status/api/monitors/${monitorId}`);
-    if (busy || (model && fresh.updated_at < model.updated_at)) return;
+    const dashboard = await request(`/status/api/dashboards/${requestedDashboard}`);
+    if (expectedRevision !== revision || busy) return;
+    const selected = dashboard.monitors.some((item) => item.id === monitorId) ? monitorId : dashboard.monitors[0]?.id || null;
+    const fresh = selected ? await request(`/status/api/monitors/${selected}`) : null;
+    if (expectedRevision !== revision || busy) return;
+    monitors = dashboard.monitors;
+    schedulerOnline = dashboard.scheduler_online;
+    monitorId = selected;
     model = fresh;
+    if (fresh) upsert(fresh);
+    remember();
     networkError = '';
     render();
   } catch (error) {
+    if (expectedRevision !== revision) return;
     networkError = error.message;
     $('connection').textContent = '连接暂时中断';
     $('connection').className = 'connection error';
     notice(`${error.message}。服务器上已有的监测不会因为页面断线而停止。`);
-  } finally { loading = false; }
+  } finally {
+    loading = false;
+    if (expectedRevision !== revision && !busy) refresh();
+  }
 }
-function openSettings() {
-  $('config-url').value = model?.url || '';
-  $('config-model').value = model?.model || '';
-  $('config-effort').value = model?.reasoning_effort || 'medium';
-  $('config-interval').value = (model?.interval_seconds || 1800)/60;
+function openSettings(mode = 'edit') {
+  if (busy || !ready) return;
+  const source = mode === 'new' ? null : model;
+  editingId = mode === 'edit' ? source?.id || null : null;
+  sourceId = mode === 'copy' ? source?.id || null : null;
+  sourceUrl = source?.url || '';
+  $('settings-title').textContent = editingId ? '编辑监测' : sourceId ? '复用连接 · 新增模型' : '新增监测';
+  $('settings-intro').textContent = sourceId ? '沿用当前供应商的 URL 和 Key，填写另一个模型即可。保存后单独启停。' : '每个监测独立保存，关闭页面后服务器继续执行。';
+  $('config-name').value = source ? ((source.name || '') + (sourceId && source.name ? ' · 副本' : '')).slice(0, 80) : '';
+  $('config-url').value = source?.url || '';
+  $('config-model').value = sourceId ? '' : source?.model || '';
+  $('config-effort').value = source?.reasoning_effort || 'medium';
+  $('config-interval').value = (source?.interval_seconds || 1800)/60;
   $('config-key').value = '';
-  $('config-key').required = !model;
-  $('config-key').placeholder = model ? '留空保留已保存的 Key' : '输入上游服务的 Key';
-  $('key-hint').textContent = model ? '已加密保存 · 留空不修改' : '加密保存，不回显';
+  updateKeyHint();
   $('settings-error').hidden = true;
   $('settings-dialog').showModal();
 }
+function updateKeyHint() {
+  const reuse = sourceId && $('config-url').value.trim() === sourceUrl;
+  $('config-key').required = !editingId && !reuse;
+  $('config-key').placeholder = editingId ? '留空保留已保存的 Key' : reuse ? '留空使用该连接已保存的 Key' : '输入上游服务的 Key';
+  $('key-hint').textContent = editingId ? '已加密保存 · 留空不修改' : reuse ? '由服务器复用，不回显' : sourceId ? '更换地址需填写 Key' : '加密保存，不回显';
+}
+async function ensureDashboard() {
+  if (dashboardId) return;
+  const dashboard = await request('/status/api/dashboards', {method:'POST', body:'{}'});
+  dashboardId = dashboard.id;
+  remember();
+}
 async function saveSettings(event) {
   event.preventDefault();
-  if (busy) return;
+  if (busy || !ready) return;
   busy = true;
+  revision++;
   $('save').disabled = true;
   $('settings-error').hidden = true;
-  const config = {url:$('config-url').value.trim(),model:$('config-model').value.trim(),reasoning_effort:$('config-effort').value,interval_seconds:Number($('config-interval').value)*60};
-  if ($('config-key').value || !model) config.key = $('config-key').value;
+  const config = {name:$('config-name').value.trim(),url:$('config-url').value.trim(),model:$('config-model').value.trim(),reasoning_effort:$('config-effort').value,interval_seconds:Number($('config-interval').value)*60};
+  if ($('config-key').value || (!editingId && !sourceId)) config.key = $('config-key').value;
+  if (sourceId) config.source_monitor_id = sourceId;
+  render();
   try {
-    const saved = await request(model ? `/status/api/monitors/${monitorId}` : '/status/api/monitors', {method:model ? 'PATCH' : 'POST',body:JSON.stringify(config)});
-    model = saved;
-    remember(saved.id);
+    await ensureDashboard();
+    const saved = await request(editingId ? `/status/api/monitors/${editingId}` : `/status/api/dashboards/${dashboardId}/monitors`, {method:editingId ? 'PATCH' : 'POST',body:JSON.stringify(config)});
+    monitorId = saved.id;
+    upsert(saved);
+    remember();
     $('config-key').value = '';
     networkError = '';
     $('settings-dialog').close();
@@ -150,15 +232,28 @@ async function saveSettings(event) {
     $('settings-error').hidden = false;
   } finally { busy = false; $('save').disabled = false; render(); }
 }
-async function action(kind) {
-  if (busy || !model) return;
+async function action(kind, id = monitorId) {
+  const item = monitors.find((entry) => entry.id === id);
+  if (busy || !ready || !item) return;
   busy = true;
+  revision++;
   render();
   try {
-    model = kind === 'run' ? await request(`/status/api/monitors/${monitorId}/run`, {method:'POST',body:'{}'}) : await request(`/status/api/monitors/${monitorId}`, {method:'PATCH',body:JSON.stringify({enabled:!model.enabled})});
+    const saved = kind === 'run' ? await request(`/status/api/monitors/${id}/run`, {method:'POST',body:'{}'}) : await request(`/status/api/monitors/${id}`, {method:'PATCH',body:JSON.stringify({enabled:!item.enabled})});
+    upsert(saved);
     networkError = '';
   } catch (error) { networkError = error.message; }
   finally { busy = false; render(); }
+}
+function select(id) {
+  if (id === monitorId || busy || !ready) return;
+  revision++;
+  monitorId = id;
+  model = null;
+  $('history-dialog').close();
+  remember();
+  render();
+  refresh();
 }
 function detail(id) {
   const item = model?.history.find((row) => row.id === id);
@@ -167,7 +262,17 @@ function detail(id) {
   renderCandidates(item.result, $('detail-candidates'));
   $('history-dialog').showModal();
 }
-$('settings-open').addEventListener('click', openSettings);
+$('settings-open').addEventListener('click', () => openSettings('edit'));
+$('monitor-add').addEventListener('click', () => openSettings('new'));
+$('monitor-copy').addEventListener('click', () => openSettings('copy'));
+$('config-url').addEventListener('input', updateKeyHint);
+$('monitor-filter').addEventListener('input', renderList);
+$('monitor-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-action]');
+  if (!button) return;
+  if (button.dataset.action === 'select') select(button.dataset.id);
+  else action(button.dataset.action, button.dataset.id);
+});
 $('settings-form').addEventListener('submit', saveSettings);
 $('toggle').addEventListener('click', () => action('toggle'));
 $('run').addEventListener('click', () => action('run'));
@@ -176,7 +281,31 @@ $('history').addEventListener('click', (event) => { const row = event.target.clo
 $('history').addEventListener('keydown', (event) => { if (['Enter',' '].includes(event.key) && event.target.dataset.id) { event.preventDefault(); detail(event.target.dataset.id); } });
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => $(button.dataset.close).close());
 $('settings-dialog').addEventListener('close', () => { $('config-key').value = ''; });
-if (monitorId) { remember(monitorId); refresh(); }
+async function initialize() {
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  dashboardId = fragment.get('dashboard');
+  monitorId = fragment.get('monitor');
+  try {
+    if (!dashboardId && !monitorId) {
+      dashboardId = localStorage.getItem('modeltrace-dashboard');
+      monitorId = localStorage.getItem('modeltrace-monitor');
+    }
+  } catch { /* A bookmarked capability link also restores the dashboard. */ }
+  if (!validId(dashboardId)) dashboardId = null;
+  if (!validId(monitorId)) monitorId = null;
+  try {
+    if (!dashboardId && monitorId) {
+      // Adopt the original single monitor without modifying its key, history or schedule.
+      const dashboard = await request('/status/api/dashboards', {method:'POST', body:JSON.stringify({monitor_id:monitorId})});
+      dashboardId = dashboard.id;
+      remember();
+    }
+    await refresh();
+    ready = true;
+  } catch (error) { networkError = error.message; }
+  render();
+}
+initialize();
 setInterval(refresh, 3000);
 setInterval(countdown, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });

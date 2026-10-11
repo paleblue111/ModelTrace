@@ -16,6 +16,10 @@ class MonitorBusy(ValueError):
     pass
 
 
+class MonitorNotFound(ValueError):
+    pass
+
+
 class MonitorStore:
     def __init__(self, detections):
         self.tasks = detections
@@ -29,16 +33,82 @@ class MonitorStore:
         raw = self.redis.get(self.key(monitor_id))
         return json.loads(raw) if raw else None
 
-    def create(self, config):
+    def prepare(self, config):
         now = time.time()
         record = {"id": uuid.uuid4().hex, "created_at": now, "updated_at": now,
+                  "name": config.get("name", ""),
                   "url": config["base_url"], "model": config["model"],
                   "reasoning_effort": config["reasoning_effort"], "interval_seconds": config["interval_seconds"],
                   "encrypted_key": self.tasks.cipher.encrypt(config["api_key"].encode()).decode(),
                   "enabled": False, "run_requested": False, "next_run_at": None,
                   "active_task_id": None, "history": [], "total_runs": 0, "last_error": None}
+        return record
+
+    def create(self, config):
+        record = self.prepare(config)
         self.redis.set(self.key(record["id"]), json.dumps(record))
         return record
+
+    @staticmethod
+    def dashboard_key(dashboard_id):
+        return f"modeltrace:dashboard:{dashboard_id}"
+
+    def create_dashboard(self, monitor_id=None):
+        if monitor_id and not self.get(monitor_id):
+            raise MonitorNotFound("原监测配置不存在")
+        record = {"id": uuid.uuid4().hex, "created_at": time.time(),
+                  "monitor_ids": [monitor_id] if monitor_id else []}
+        self.redis.set(self.dashboard_key(record["id"]), json.dumps(record))
+        return record
+
+    def get_dashboard(self, dashboard_id):
+        raw = self.redis.get(self.dashboard_key(dashboard_id))
+        return json.loads(raw) if raw else None
+
+    def add_to_dashboard(self, dashboard_id, config):
+        # A new monitor and its membership must be committed together.
+        record = self.prepare(config)
+        key = self.dashboard_key(dashboard_id)
+        while True:
+            with self.redis.pipeline() as pipe:
+                try:
+                    pipe.watch(key)
+                    raw = pipe.get(key)
+                    if not raw:
+                        raise MonitorNotFound("监测面板不存在")
+                    dashboard = json.loads(raw)
+                    if len(dashboard["monitor_ids"]) >= 100:
+                        raise ValueError("每个面板最多保存 100 个监测项")
+                    dashboard["monitor_ids"].append(record["id"])
+                    pipe.multi()
+                    pipe.set(key, json.dumps(dashboard))
+                    pipe.set(self.key(record["id"]), json.dumps(record))
+                    pipe.execute()
+                    return record
+                except WatchError:
+                    continue
+
+    def public_dashboard(self, record):
+        ids = record["monitor_ids"]
+        raw_records = self.redis.mget([self.key(item) for item in ids]) if ids else []
+        monitors = [self.summary(json.loads(raw)) for raw in raw_records if raw]
+        heartbeat = self.redis.get("modeltrace:scheduler:heartbeat")
+        return {"id": record["id"], "monitors": monitors,
+                "scheduler_online": bool(heartbeat and time.time() - float(heartbeat) < 15)}
+
+    @staticmethod
+    def summary(record):
+        # Polling a list must not transfer every monitor's samples and history.
+        fields = ("id", "name", "url", "model", "reasoning_effort", "interval_seconds", "enabled",
+                  "run_requested", "active_task_id", "next_run_at", "updated_at", "last_error", "total_runs")
+        data = {field: record.get(field) for field in fields}
+        latest = record["history"][0] if record["history"] else None
+        result = (latest.get("result") or {}) if latest else {}
+        data["latest"] = {"status": latest["status"], "finished_at": latest["finished_at"],
+                          "prediction_name": result.get("prediction_name"),
+                          "probability": result.get("probability"),
+                          "valid_samples": latest["progress"]["valid"]} if latest else None
+        return data
 
     def save(self, pipe, record):
         pipe.set(self.key(record["id"]), json.dumps(record))
@@ -61,7 +131,7 @@ class MonitorStore:
                     if changes.get("run_requested") and (record["active_task_id"] or record["run_requested"]):
                         raise MonitorBusy("已有检测任务，完成后再试")
                     now = time.time()
-                    for field in ("url", "model", "reasoning_effort", "interval_seconds", "enabled", "run_requested"):
+                    for field in ("name", "url", "model", "reasoning_effort", "interval_seconds", "enabled", "run_requested"):
                         if field in changes:
                             record[field] = changes[field]
                     if changes.get("api_key"):

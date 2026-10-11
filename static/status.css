@@ -39,6 +39,29 @@ main{max-width:1490px;margin:0 auto;padding:38px 40px 24px}
 .primary:hover{background:#18583f}
 .secondary{background:white;border-color:#dfe5e1;color:#506056}
 .secondary:hover{background:#f2f6f3}
+.monitor-library{margin-bottom:28px}
+.monitor-library .panel-heading{gap:16px;flex-wrap:wrap}
+.monitor-search{margin:0;width:235px;max-width:100%}
+.monitor-search input{margin:0;height:34px;background:#fafcfb;font-size:11px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.monitor-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;padding:18px;max-height:530px;overflow:auto}
+.monitor-list>.empty{grid-column:1/-1;min-height:145px}
+.monitor-tile{min-width:0;border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden}
+.monitor-tile.selected{border-color:#65a081;box-shadow:0 0 0 1px #65a081;background:#f6fbf7}
+.monitor-select{display:block;width:100%;padding:16px;text-align:left;background:none;border:0;color:inherit}
+.monitor-select:hover{background:#f3f8f4}
+.tile-heading{display:flex;justify-content:space-between;align-items:start;gap:10px;margin-bottom:9px}
+.tile-heading strong{font-size:13px;line-height:1.5;overflow-wrap:anywhere}
+.tile-provider,.tile-model{display:block;font-size:11px;line-height:1.7;color:#8a978e;overflow-wrap:anywhere}
+.tile-model{color:#526a5b;margin:6px 0 12px}
+.tile-result{display:block;border-top:1px solid #e8eee9;padding-top:11px;font-size:11px;color:#788e80;line-height:1.8}
+.tile-result b{font-weight:550;color:#37634a}
+.tile-actions{display:flex;gap:6px;justify-content:flex-end;padding:0 12px 12px}
+.tile-actions .button{font-size:10px;min-height:29px;padding:6px 9px}
+.selection-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 18px}
+.selection-heading h2{font-size:19px;font-weight:600;margin:8px 0 0;overflow-wrap:anywhere}
+.selection-heading>div:first-child{min-width:0}
+.selection-actions{display:flex;gap:8px;flex-shrink:0}
 .overview{display:grid;grid-template-columns:1.02fr 1fr;gap:20px}
 .monitor-card,.result-card,.panel{background:#fff;border:1px solid var(--line);border-radius:11px}
 .monitor-card,.result-card{padding:23px 25px}
@@ -145,6 +168,7 @@ input:focus,select:focus{border-color:#69a881;box-shadow:0 0 0 3px #ddede2}
 .monitor-card,.result-card{padding:28px 30px}
 }
 @media(max-width:1100px){.sidebar{width:190px;padding:30px 15px}
+.monitor-list{grid-template-columns:repeat(2,minmax(0,1fr))}
 .page{margin-left:190px}
 .topbar{padding:0 25px}
 main{padding:30px 25px}
@@ -178,7 +202,13 @@ footer>span{display:none}
 .page-heading .eyebrow{font-size:8px}
 .page-heading p{font-size:11px;max-width:230px}
 .page-heading>.button{font-size:0;padding:9px 10px;min-height:31px}
-.page-heading>.button:after{content:'设置';font-size:11px}
+.page-heading>.button:after{content:'＋ 新增监测';font-size:11px}
+.monitor-list{grid-template-columns:1fr;padding:14px;max-height:490px}
+.monitor-search{width:100%}
+.monitor-library .panel-heading{padding:18px}
+.selection-heading{align-items:flex-start;flex-direction:column}
+.selection-actions{width:100%}
+.selection-actions .button{flex:1}
 .overview,.details-grid{grid-template-columns:1fr}
 .result-content h2{font-size:22px}
 .result-content{min-height:110px}

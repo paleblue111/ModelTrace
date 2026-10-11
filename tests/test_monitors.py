@@ -163,3 +163,129 @@ def test_allowlist_does_not_break_pause(client, backend, monkeypatch):
     monitor = create(client)
     monkeypatch.setenv('UPSTREAM_ALLOWED_HOSTS', 'different-allowed-host.example')
     assert client.patch('/status/api/monitors/' + monitor['id'], json={'enabled':False}).status_code == 200
+
+
+def dashboard(client, monitor_id=None):
+    response = client.post('/status/api/dashboards', json={'monitor_id': monitor_id} if monitor_id else {})
+    assert response.status_code == 201
+    return response.json['id']
+
+
+def add_monitor(client, dashboard_id, **changes):
+    response = client.post(f'/status/api/dashboards/{dashboard_id}/monitors', json={**CONFIG, **changes})
+    assert response.status_code == 201, response.json
+    return response.json
+
+
+def test_dashboard_adopts_legacy_monitor_without_changing_it(client, backend):
+    legacy = create(client)
+    store = MonitorStore(backend)
+    store.update(legacy['id'], {'enabled': True})
+    store.tick(legacy['id'])
+    before = store.get(legacy['id'])
+    # Simulate a stored record created before names were introduced.
+    before.pop('name')
+    backend.redis.set(store.key(legacy['id']), json.dumps(before))
+    board = dashboard(client, legacy['id'])
+    restored = MonitorStore(backend).get_dashboard(board)
+    assert restored['monitor_ids'] == [legacy['id']]
+    assert store.get(legacy['id']) == before
+    reply = client.get(f'/status/api/dashboards/{board}')
+    assert reply.json['monitors'][0]['id'] == legacy['id']
+    assert reply.json['monitors'][0]['active_task_id'] == before['active_task_id']
+    assert reply.headers['Cache-Control'] == 'no-store'
+    assert 'encrypted_key' not in reply.text and CONFIG['key'] not in reply.text
+
+
+def test_multiple_providers_keep_credentials_history_and_schedule_separate(client, backend):
+    board = dashboard(client)
+    first = add_monitor(client, board, name='供应商 A / 模型 1', model='model-1', interval_seconds=60)
+    second = add_monitor(client, board, name='供应商 A / 模型 2', model='model-2')
+    third = add_monitor(client, board, name='供应商 B', model='model-1', url='https://other.example/v1', key='other-secret')
+    store = MonitorStore(backend)
+    for item in (first, second, third):
+        store.update(item['id'], {'enabled': True})
+        store.tick(item['id'])
+    assert backend.redis.llen(QUEUE) == 3
+    first_task, second_task, third_task = [backend.claim() for _ in range(3)]
+    assert [backend.credential(item['id']) for item in (first_task, second_task, third_task)] == [CONFIG['key'], CONFIG['key'], 'other-secret']
+    assert [item['requested_model'] for item in (first_task, second_task, third_task)] == ['model-1', 'model-2', 'model-1']
+    assert third_task['base_url'] == 'https://other.example/v1/responses'
+    client.patch('/status/api/monitors/' + second['id'], json={'enabled': False, 'name': '暂停这一项'})
+    worker.run_task(backend, first_task, success)
+    backend.finish(second_task['id'], 'failed', 'upstream_error')
+    worker.run_task(backend, third_task, success)
+    for item in (first, second, third):
+        store.tick(item['id'])
+    records = [store.get(item['id']) for item in (first, second, third)]
+    assert [record['history'][0]['id'] for record in records] == [first_task['id'], second_task['id'], third_task['id']]
+    assert records[0]['next_run_at'] < time.time() + 61
+    assert records[1]['next_run_at'] is None and not records[1]['enabled']
+    assert records[2]['enabled'] and records[2]['next_run_at'] > time.time() + 1790
+    public = client.get(f'/status/api/dashboards/{board}').json
+    assert len(public['monitors']) == 3
+    assert [item['latest']['status'] for item in public['monitors']] == ['completed', 'failed', 'completed']
+    assert all('history' not in item and 'samples' not in item for item in public['monitors'])
+    assert not any(secret in json.dumps(public) for secret in ('encrypted_key', 'other-secret', CONFIG['key']))
+
+
+def test_reuse_connection_creates_independent_monitor_without_disclosing_key(client, backend):
+    board = dashboard(client)
+    original = add_monitor(client, board)
+    copy = {key: value for key, value in CONFIG.items() if key != 'key'}
+    copy.update(source_monitor_id=original['id'], model='another-model', name='第二个模型')
+    response = client.post(f'/status/api/dashboards/{board}/monitors', json=copy)
+    assert response.status_code == 201
+    assert response.json['id'] != original['id']
+    assert not response.json['enabled'] and response.json['history'] == []
+    assert CONFIG['key'] not in response.text and 'encrypted_key' not in response.text
+    store = MonitorStore(backend)
+    saved = store.get(response.json['id'])
+    assert backend.cipher.decrypt(saved['encrypted_key'].encode()).decode() == CONFIG['key']
+    client.patch('/status/api/monitors/' + original['id'], json={'key': 'changed-original'})
+    assert backend.cipher.decrypt(store.get(saved['id'])['encrypted_key'].encode()).decode() == CONFIG['key']
+    assert store.get(original['id'])['model'] == CONFIG['model']
+
+
+def test_reuse_requires_new_key_for_changed_url_and_membership(client, backend):
+    first_board, other_board = dashboard(client), dashboard(client)
+    original = add_monitor(client, first_board)
+    config = {key: value for key, value in CONFIG.items() if key != 'key'}
+    config['source_monitor_id'] = original['id']
+    assert client.post(f'/status/api/dashboards/{other_board}/monitors', json=config).status_code == 404
+    config['url'] = 'https://other.example/v1'
+    assert client.post(f'/status/api/dashboards/{first_board}/monitors', json=config).status_code == 400
+    config['key'] = 'other-provider-key'
+    assert client.post(f'/status/api/dashboards/{first_board}/monitors', json=config).status_code == 201
+    assert len(client.get(f'/status/api/dashboards/{other_board}').json['monitors']) == 0
+    assert client.get('/status/api/dashboards').status_code == 405
+    assert client.get('/status/api/monitors').status_code == 405
+    assert client.get('/status/api/dashboards/' + '0' * 32).status_code == 404
+    assert client.post('/status/api/dashboards', json={'monitor_id': '0' * 32}).status_code == 404
+
+
+def test_concurrent_additions_do_not_lose_membership(backend):
+    store = MonitorStore(backend)
+    board = store.create_dashboard()
+    config = {'base_url': CONFIG['url'], 'api_key': CONFIG['key'], 'model': CONFIG['model'],
+              'reasoning_effort': 'high', 'interval_seconds': 60}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        created = list(pool.map(lambda _: MonitorStore(backend).add_to_dashboard(board['id'], config), range(8)))
+    assert set(store.get_dashboard(board['id'])['monitor_ids']) == {item['id'] for item in created}
+    assert all(store.get(item['id']) for item in created)
+
+
+@pytest.mark.parametrize('name', [None, 123, 'x' * 81])
+def test_invalid_monitor_name(client, name):
+    assert client.post('/status/api/monitors', json={**CONFIG, 'name': name}).status_code == 400
+
+
+def test_full_dashboard_does_not_create_orphan_monitors(client, backend):
+    board = dashboard(client)
+    store = MonitorStore(backend)
+    record = store.get_dashboard(board)
+    record['monitor_ids'] = ['0' * 32] * 100
+    backend.redis.set(store.dashboard_key(board), json.dumps(record))
+    before = set(backend.redis.scan_iter('modeltrace:monitor:*'))
+    assert client.post(f'/status/api/dashboards/{board}/monitors', json=CONFIG).status_code == 400
+    assert set(backend.redis.scan_iter('modeltrace:monitor:*')) == before
