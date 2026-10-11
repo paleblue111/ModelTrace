@@ -44,6 +44,7 @@ services:
       retries: 3
   worker:
     <<: *common
+    scale: 3
     command: ["python", "detection_worker.py"]
     stop_grace_period: 10s
   scheduler:

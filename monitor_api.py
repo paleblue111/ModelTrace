@@ -50,6 +50,17 @@ def valid_id(value):
     return isinstance(value, str) and len(value) == 32 and all(c in "0123456789abcdef" for c in value)
 
 
+@api.get("/status/api/dashboards/default")
+def default_dashboard():
+    try:
+        backend = MonitorStore(store())
+        return jsonify(backend.public_dashboard(backend.default_dashboard()))
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except RedisError:
+        return jsonify(error="任务存储暂不可用"), 503
+
+
 @api.route("/status/api/dashboards", methods=["POST"])
 def create_dashboard():
     payload = request.get_json(silent=True)
@@ -113,6 +124,19 @@ def dashboard(dashboard_id):
 def no_cache(response):
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@api.route("/status/api/monitors/default", methods=["GET", "POST"])
+def default_monitor():
+    try:
+        config = validate_config(request.get_json(silent=True)) if request.method == "POST" else None
+        backend = MonitorStore(store())
+        record = backend.default(config)
+        return jsonify(backend.public(record) if record else None)
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except RedisError:
+        return jsonify(error="任务存储暂不可用"), 503
 
 
 @api.route("/status/api/monitors", methods=["POST"])

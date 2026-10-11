@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from detection_store import QUEUE
-from monitor_store import DUE, MonitorStore
+from monitor_store import DEFAULT, DEFAULT_DASHBOARD, DUE, MonitorStore
 from test_detections import backend, client, worker, success
 
 CONFIG = {"url":"https://example.com/v1", "key":"monitor-upstream-secret", "model":"alias",
@@ -16,6 +16,101 @@ def create(client):
     response = client.post('/status/api/monitors', json=CONFIG)
     assert response.status_code == 201
     return response.json
+
+
+def test_shared_default_across_clients(client, backend):
+    from app import app
+    other = app.test_client()
+    url = '/status/api/monitors/default'
+    assert other.get(url).json is None
+    saved = client.post(url, json=CONFIG)
+    assert saved.status_code == 200
+    record = saved.json
+    assert other.get(url).json == record
+    assert other.get(url).headers['Cache-Control'] == 'no-store'
+    assert 'encrypted_key' not in record
+    assert CONFIG['key'] not in saved.text
+    client.patch('/status/api/monitors/' + record['id'], json={'model':'shared-model'})
+    assert other.get(url).json['model'] == 'shared-model'
+    # A stale first-time form must neither overwrite nor create a second monitor.
+    assert other.post(url, json=CONFIG).json['model'] == 'shared-model'
+    assert len(list(backend.redis.scan_iter(match='modeltrace:monitor:*'))) == 1
+
+
+def test_default_adopts_oldest_existing_monitor(client, backend):
+    first = create(client)
+    create(client)
+    assert client.get('/status/api/monitors/default').json['id'] == first['id']
+    assert backend.redis.get(DEFAULT) == first['id']
+
+
+def test_concurrent_default_creation_uses_one_monitor(backend):
+    from monitor_api import validate_config
+    monitors = MonitorStore(backend)
+    config = validate_config(CONFIG)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        records = list(pool.map(lambda _: monitors.default(config), range(8)))
+    assert len({record['id'] for record in records}) == 1
+    assert len(list(backend.redis.scan_iter(match='modeltrace:monitor:*'))) == 1
+
+
+def test_index_redirects_to_status(client):
+    response = client.get('/index')
+    assert response.status_code == 302
+    assert response.headers['Location'] == '/status'
+    assert client.get('/index', follow_redirects=True).status_code == 200
+
+
+def test_shared_dashboard_across_browsers(client, backend):
+    from app import app
+    other = app.test_client()
+    first = client.get('/status/api/dashboards/default')
+    assert first.status_code == 200 and first.json['monitors'] == []
+    board = first.json['id']
+    assert other.get('/status/api/dashboards/default').json['id'] == board
+    created = add_monitor(client, board, name='共享供应商 A', model='model-a')
+    add_monitor(other, board, name='共享供应商 B', model='model-b', url='https://other.example/v1')
+    reply = other.get('/status/api/dashboards/default')
+    assert [item['model'] for item in reply.json['monitors']] == ['model-a', 'model-b']
+    assert reply.headers['Cache-Control'] == 'no-store'
+    assert 'encrypted_key' not in reply.text and CONFIG['key'] not in reply.text
+    other.patch('/status/api/monitors/' + created['id'], json={'enabled': True})
+    assert client.get('/status/api/dashboards/default').json['monitors'][0]['enabled']
+    assert len(list(backend.redis.scan_iter('modeltrace:dashboard:*'))) == 1
+
+
+def test_shared_dashboard_adopts_existing_panel_and_preserves_state(client, backend):
+    board = dashboard(client)
+    first = add_monitor(client, board, model='model-a')
+    second = add_monitor(client, board, model='model-b')
+    another_board = dashboard(client)
+    add_monitor(client, another_board, model='other-panel')
+    store = MonitorStore(backend)
+    store.update(first['id'], {'enabled': True})
+    store.tick(first['id'])
+    before = [store.get(item['id']) for item in (first, second)]
+    shared = client.get('/status/api/dashboards/default').json
+    assert shared['id'] == board
+    assert [item['id'] for item in shared['monitors']] == [first['id'], second['id']]
+    assert [store.get(item['id']) for item in (first, second)] == before
+    assert backend.redis.get(DEFAULT_DASHBOARD) == board
+    assert store.get_dashboard(another_board)['monitor_ids']
+
+
+def test_shared_dashboard_adopts_standalone_legacy_monitors(client, backend):
+    first, second = create(client), create(client)
+    store = MonitorStore(backend)
+    before = [store.get(item['id']) for item in (first, second)]
+    shared = client.get('/status/api/dashboards/default').json
+    assert [item['id'] for item in shared['monitors']] == [first['id'], second['id']]
+    assert [store.get(item['id']) for item in (first, second)] == before
+
+
+def test_concurrent_shared_dashboard_initialization_uses_one_panel(backend):
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        records = list(pool.map(lambda _: MonitorStore(backend).default_dashboard(), range(8)))
+    assert len({record['id'] for record in records}) == 1
+    assert len(list(backend.redis.scan_iter('modeltrace:dashboard:*'))) == 1
 
 
 def test_page_and_settings_never_disclose_key(client, backend):

@@ -7,7 +7,7 @@ import re
 import secrets
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 from enrollment import bank_summary, enroll_automatic, request_completion, test_automatic
 from fingerprint import analyze_global_outputs, generate_challenges, load_bank, parse_numbers
@@ -175,6 +175,11 @@ def index():
         auth_required=bool(os.getenv("MODELTRACE_API_TOKEN")),
         async_only=os.getenv("ASYNC_ONLY", "false").lower() == "true",
     )
+
+
+@app.get("/index")
+def index_redirect():
+    return redirect(url_for("status_page"))
 
 
 @app.get("/status")

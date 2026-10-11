@@ -10,6 +10,8 @@ from redis import WatchError
 from detection_store import QUEUE, TERMINAL, public_record
 
 DUE = "modeltrace:monitors:due"
+DEFAULT = "modeltrace:monitors:default"
+DEFAULT_DASHBOARD = "modeltrace:dashboards:default"
 
 
 class MonitorBusy(ValueError):
@@ -32,6 +34,36 @@ class MonitorStore:
     def get(self, monitor_id):
         raw = self.redis.get(self.key(monitor_id))
         return json.loads(raw) if raw else None
+
+    def default(self, config=None):
+        """Resolve one shared monitor, adopting the oldest existing configuration."""
+        while True:
+            with self.redis.pipeline() as pipe:
+                try:
+                    pipe.watch(DEFAULT)
+                    monitor_id = pipe.get(DEFAULT)
+                    record = self.get(monitor_id) if monitor_id else None
+                    if record:
+                        return record
+                    records = []
+                    for key in self.redis.scan_iter(match="modeltrace:monitor:*"):
+                        raw = self.redis.get(key)
+                        if raw:
+                            records.append(json.loads(raw))
+                    record = min(records, key=lambda item: (item["created_at"], item["id"])) if records else None
+                    if record is None and config is None:
+                        return None
+                    new_record = record is None
+                    if new_record:
+                        record = self.prepare(config)
+                    pipe.multi()
+                    if new_record:
+                        pipe.set(self.key(record["id"]), json.dumps(record))
+                    pipe.set(DEFAULT, record["id"])
+                    pipe.execute()
+                    return record
+                except WatchError:
+                    continue
 
     def prepare(self, config):
         now = time.time()
@@ -64,6 +96,47 @@ class MonitorStore:
     def get_dashboard(self, dashboard_id):
         raw = self.redis.get(self.dashboard_key(dashboard_id))
         return json.loads(raw) if raw else None
+
+    def default_dashboard(self):
+        """Use one server-owned panel across browsers, adopting existing data once."""
+        while True:
+            with self.redis.pipeline() as pipe:
+                try:
+                    pipe.watch(DEFAULT_DASHBOARD)
+                    dashboard_id = pipe.get(DEFAULT_DASHBOARD)
+                    record = self.get_dashboard(dashboard_id) if dashboard_id else None
+                    if record:
+                        return record
+                    dashboards = []
+                    for key in self.redis.scan_iter(match="modeltrace:dashboard:*"):
+                        raw = self.redis.get(key)
+                        if raw:
+                            dashboards.append(json.loads(raw))
+                    record = min(dashboards, key=lambda item: (item["created_at"], item["id"])) if dashboards else None
+                    if record:
+                        # Preserve membership if another browser adds a monitor during adoption.
+                        key = self.dashboard_key(record["id"])
+                        pipe.watch(key)
+                        raw = pipe.get(key)
+                        if not raw:
+                            continue
+                        record = json.loads(raw)
+                    else:
+                        monitors = []
+                        for key in self.redis.scan_iter(match="modeltrace:monitor:*"):
+                            raw = self.redis.get(key)
+                            if raw:
+                                monitors.append(json.loads(raw))
+                        monitors.sort(key=lambda item: (item["created_at"], item["id"]))
+                        record = {"id": uuid.uuid4().hex, "created_at": time.time(),
+                                  "monitor_ids": [item["id"] for item in monitors[:100]]}
+                    pipe.multi()
+                    pipe.set(self.dashboard_key(record["id"]), json.dumps(record))
+                    pipe.set(DEFAULT_DASHBOARD, record["id"])
+                    pipe.execute()
+                    return record
+                except WatchError:
+                    continue
 
     def add_to_dashboard(self, dashboard_id, config):
         # A new monitor and its membership must be committed together.

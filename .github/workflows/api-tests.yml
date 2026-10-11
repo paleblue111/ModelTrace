@@ -24,3 +24,12 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose build
+      - name: Verify default Docker deployment
+        run: |
+          docker compose up -d --no-build --wait
+          test "$(docker compose ps --status running --quiet worker | wc -l)" -eq 3
+          curl --fail http://127.0.0.1:10001/healthz
+          curl --fail --output /dev/null http://127.0.0.1:10001/status
+      - name: Stop test containers
+        if: always()
+        run: docker compose down --volumes

@@ -12,6 +12,7 @@ const pending = (item) => Boolean(item.active_task_id || item.run_requested);
 const emptyHistory = $('history').innerHTML;
 let dashboardId = null;
 let monitorId = null;
+let sharedDefault = true;
 let monitors = [];
 let schedulerOnline = false;
 let model = null;
@@ -47,11 +48,11 @@ function notice(message) {
   $('notice').hidden = !message;
 }
 function remember() {
-  try {
-    if (dashboardId) localStorage.setItem('modeltrace-dashboard', dashboardId);
-    if (monitorId) localStorage.setItem('modeltrace-monitor', monitorId);
-    else localStorage.removeItem('modeltrace-monitor');
-  } catch { /* IDs are also in the address; credentials never enter storage. */ }
+  if (sharedDefault) {
+    history.replaceState(null, '', `${location.pathname}${location.search}`);
+    return;
+  }
+  // Explicit capability links remain usable without relying on browser storage.
   const fragment = new URLSearchParams();
   if (dashboardId) fragment.set('dashboard', dashboardId);
   if (monitorId) fragment.set('monitor', monitorId);
@@ -148,16 +149,17 @@ function render() {
   countdown();
 }
 async function refresh() {
-  if (!dashboardId || loading || busy) return;
+  if ((!dashboardId && !sharedDefault) || loading || busy) return;
   loading = true;
   const expectedRevision = revision;
-  const requestedDashboard = dashboardId;
+  const requestedDashboard = sharedDefault ? 'default' : dashboardId;
   try {
     const dashboard = await request(`/status/api/dashboards/${requestedDashboard}`);
     if (expectedRevision !== revision || busy) return;
     const selected = dashboard.monitors.some((item) => item.id === monitorId) ? monitorId : dashboard.monitors[0]?.id || null;
     const fresh = selected ? await request(`/status/api/monitors/${selected}`) : null;
     if (expectedRevision !== revision || busy) return;
+    dashboardId = dashboard.id;
     monitors = dashboard.monitors;
     schedulerOnline = dashboard.scheduler_online;
     monitorId = selected;
@@ -203,7 +205,7 @@ function updateKeyHint() {
 }
 async function ensureDashboard() {
   if (dashboardId) return;
-  const dashboard = await request('/status/api/dashboards', {method:'POST', body:'{}'});
+  const dashboard = sharedDefault ? await request('/status/api/dashboards/default') : await request('/status/api/dashboards', {method:'POST', body:'{}'});
   dashboardId = dashboard.id;
   remember();
 }
@@ -282,29 +284,29 @@ $('history').addEventListener('keydown', (event) => { if (['Enter',' '].includes
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => $(button.dataset.close).close());
 $('settings-dialog').addEventListener('close', () => { $('config-key').value = ''; });
 async function initialize() {
+  const expectedRevision = ++revision;
+  ready = false;
   const fragment = new URLSearchParams(location.hash.slice(1));
   dashboardId = fragment.get('dashboard');
   monitorId = fragment.get('monitor');
-  try {
-    if (!dashboardId && !monitorId) {
-      dashboardId = localStorage.getItem('modeltrace-dashboard');
-      monitorId = localStorage.getItem('modeltrace-monitor');
-    }
-  } catch { /* A bookmarked capability link also restores the dashboard. */ }
   if (!validId(dashboardId)) dashboardId = null;
   if (!validId(monitorId)) monitorId = null;
+  sharedDefault = !dashboardId && !monitorId;
   try {
     if (!dashboardId && monitorId) {
       // Adopt the original single monitor without modifying its key, history or schedule.
       const dashboard = await request('/status/api/dashboards', {method:'POST', body:JSON.stringify({monitor_id:monitorId})});
+      if (expectedRevision !== revision) return;
       dashboardId = dashboard.id;
       remember();
     }
     await refresh();
+    if (expectedRevision !== revision) return;
     ready = true;
-  } catch (error) { networkError = error.message; }
+  } catch (error) { if (expectedRevision !== revision) return; networkError = error.message; }
   render();
 }
+window.addEventListener('hashchange', initialize);
 initialize();
 setInterval(refresh, 3000);
 setInterval(countdown, 1000);

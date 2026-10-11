@@ -79,8 +79,8 @@ try:
         page.locator('#config-interval').fill('15')
         page.locator('#save').click()
         expect(page.locator('#settings-dialog')).not_to_be_visible()
-        monitor_id = page.evaluate('localStorage.getItem("modeltrace-monitor")')
-        assert monitor_id and 'monitor=' in page.url and '#dashboard=' in page.url
+        monitor_id = monitors.default()['id']
+        assert page.url == base + '/status'
         assert 'test-upstream-key' not in page.evaluate('JSON.stringify(localStorage)')
         assert not monitors.get(monitor_id)['enabled']
         heartbeat()
@@ -93,6 +93,16 @@ try:
         expect(page.locator('#history tr[data-id]')).to_have_count(1)
         assert len(page.locator('#candidates .candidate').all()) == 5
         page.screenshot(path=str(output / 'status-desktop.png'), full_page=True)
+        # An independent browser ignores its old local IDs and loads the shared panel.
+        other_context = browser.new_context()
+        other_context.add_init_script('localStorage.setItem("modeltrace-monitor", "ffffffffffffffffffffffffffffffff"); localStorage.setItem("modeltrace-dashboard", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")')
+        other_page = other_context.new_page()
+        other_page.goto(base + '/index')
+        expect(other_page.locator('#target-model')).to_have_text('gpt-6-sol')
+        expect(other_page.locator('#history tr[data-id]')).to_have_count(1)
+        expect(other_page.locator('#result-badge')).to_have_text('完整结果')
+        assert other_page.url == base + '/status'
+        other_context.close()
         page.locator('#history tr[data-id]').click()
         expect(page.locator('#history-dialog')).to_be_visible()
         page.locator('[data-close="history-dialog"]').click()
@@ -123,7 +133,7 @@ try:
         page.locator('#config-model').fill('gpt-6-astra')
         page.locator('#save').click()
         expect(page.locator('#settings-dialog')).not_to_be_visible()
-        second_id = page.evaluate('localStorage.getItem("modeltrace-monitor")')
+        second_id = page.locator('.monitor-tile.selected').get_attribute('data-monitor-id')
         assert second_id != monitor_id
         assert backend.cipher.decrypt(monitors.get(second_id)['encrypted_key'].encode()).decode() == 'test-upstream-key-do-not-store-in-browser'
         expect(page.locator('#history tr[data-id]')).to_have_count(0)
@@ -141,7 +151,7 @@ try:
         page.locator('#config-interval').fill('60')
         page.locator('#save').click()
         expect(page.locator('#settings-dialog')).not_to_be_visible()
-        third_id = page.evaluate('localStorage.getItem("modeltrace-monitor")')
+        third_id = page.locator('.monitor-tile.selected').get_attribute('data-monitor-id')
         expect(page.locator('.monitor-tile')).to_have_count(3)
         page.locator('#toggle').click()
         expect(page.locator('#monitor-badge')).to_have_text('持续监测')
@@ -149,8 +159,9 @@ try:
         assert monitors.get(second_id)['enabled'] and monitors.get(third_id)['enabled']
         assert monitors.get(second_id)['interval_seconds'] == 900
         assert monitors.get(third_id)['interval_seconds'] == 3600
-        saved_url = page.url
-        board_id = page.evaluate('localStorage.getItem("modeltrace-dashboard")')
+        assert page.url == base + '/status'
+        board_id = monitors.default_dashboard()['id']
+        saved_url = base + f'/status#dashboard={board_id}&monitor={third_id}'
         assert set(monitors.get_dashboard(board_id)['monitor_ids']) == {monitor_id, second_id, third_id}
         assert not any(secret in page.evaluate('JSON.stringify(localStorage)') for secret in ('test-upstream-key', 'second-provider-secret'))
         page.close()
@@ -162,6 +173,10 @@ try:
         fresh_context = browser.new_context(viewport={'width':1440,'height':1100})
         page = fresh_context.new_page()
         page.on('pageerror', lambda error: errors.append(str(error)))
+        page.goto(base + '/status')
+        expect(page.locator('.monitor-tile')).to_have_count(3)
+        expect(page.locator('#target-model')).to_have_text('gpt-6-sol-updated')
+        # Explicit bookmarks still select the requested item.
         page.goto(saved_url)
         expect(page.locator('.monitor-tile')).to_have_count(3)
         expect(page.locator('#target-model')).to_have_text('gpt-6.1-sol')
@@ -204,7 +219,7 @@ try:
         assert monitors.get(monitor_id) == before
         assert not errors, errors
         browser.close()
-    print('Browser integration passed: multiple providers/models, key reuse, independent history/schedules, bookmark restore, legacy migration, search, and desktop/mobile layout.')
+    print('Browser integration passed: shared dashboard across browsers, /index redirect, multiple providers/models, key reuse, independent history/schedules, bookmark restore, legacy migration, search, and desktop/mobile layout.')
     print(f'Screenshots: {output}')
 finally:
     server.shutdown()
