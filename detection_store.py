@@ -2,20 +2,31 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import time
 import uuid
 
 from cryptography.fernet import Fernet
 from redis import Redis, WatchError
+from site_settings import SETTINGS, SiteSettings
 
 TERMINAL = {"completed", "partial", "failed", "cancelled", "interrupted"}
 QUEUE = "modeltrace:queue"
+PUBLIC_QUEUE = "modeltrace:public:queue"
+PUBLIC_RUNNING = "modeltrace:public:running"
+PUBLIC_INDEX = "modeltrace:public:results"
+PUBLIC_VISIBLE_INDEX = "modeltrace:public:visible"
+PUBLIC_EXPIRY = "modeltrace:public:expiry"
 LEASES = "modeltrace:leases"
 LEASE_SECONDS = 30
 
 
 class QueueFull(RuntimeError):
+    pass
+
+
+class PublicDisabled(RuntimeError):
     pass
 
 
@@ -66,6 +77,9 @@ class DetectionStore:
             "temperature": config.get("temperature"),
             "reasoning_effort": config.get("reasoning_effort"),
             "public_access": config.get("public_access", False),
+            "task_class": "public" if config.get("public_access") else "admin",
+            "monitor_id": config.get("monitor_id"),
+            "public_id": config.get("public_id"), "feed_hidden": False,
             "progress": {"target": 3, "valid": 0, "attempted": 0, "max_attempts": 6},
             "errors": [], "result": None, "samples": [], "reason": None,
             "preliminary": False, "insufficient_samples": True,
@@ -79,19 +93,63 @@ class DetectionStore:
         ttl = self.retention + self.queue_timeout + self.task_timeout
         pipe.set(self.key(task_id), json.dumps(record), ex=ttl)
         pipe.set(self.credential_key(task_id), encrypted, ex=self.queue_timeout + self.task_timeout)
-        pipe.rpush(QUEUE, task_id)
+        pipe.rpush(PUBLIC_QUEUE if record["task_class"] == "public" else QUEUE, task_id)
         pipe.zadd(LEASES, {task_id: record["lease_until"]})
+        if record.get("public_id"):
+            pipe.set(self.public_key(record["public_id"]), task_id, ex=ttl)
+            pipe.zadd(PUBLIC_INDEX, {record["public_id"]: record["created_at"]})
+            pipe.zadd(PUBLIC_VISIBLE_INDEX, {record["public_id"]: record["created_at"]})
+            pipe.zadd(PUBLIC_EXPIRY, {record["public_id"]: time.time() + ttl})
 
-    def submit(self, config):
+    @staticmethod
+    def public_key(public_id):
+        return f"modeltrace:public:result:{public_id}"
+
+    def submit(self, config, client_ip=None):
         record, encrypted = self.prepare(config)
+        anonymous = record["task_class"] == "public"
+        client_hash = hashlib.sha256((os.environ.get("CREDENTIAL_ENCRYPTION_KEY", "") + (client_ip or "unknown")).encode()).hexdigest()
+        rate_key = f"modeltrace:public:rate:{client_hash}"
+        active_key = f"modeltrace:public:pending:{client_hash}"
         while True:
             with self.redis.pipeline() as pipe:
                 try:
-                    pipe.watch(QUEUE)
-                    if pipe.llen(QUEUE) >= self.queue_limit:
+                    pipe.watch(QUEUE, PUBLIC_QUEUE, SETTINGS)
+                    if pipe.llen(QUEUE) + pipe.llen(PUBLIC_QUEUE) >= self.queue_limit:
                         raise QueueFull("检测队列已满，请稍后重试")
+                    now = time.time()
+                    finished = []
+                    if anonymous:
+                        settings = SiteSettings(self.redis).get(pipe)
+                        if not settings["public_enabled"]:
+                            raise PublicDisabled("管理员暂未开放单次检测")
+                        if pipe.llen(PUBLIC_QUEUE) >= settings["public_queue_limit"]:
+                            raise QueueFull("公共检测队列已满，请稍后重试")
+                        pipe.watch(rate_key, active_key)
+                        if pipe.zcount(rate_key, now - 3600, "+inf") >= settings["public_hourly_limit"]:
+                            raise QueueFull("本小时检测次数已达上限，请稍后再试")
+                        active_ids = pipe.zrange(active_key, 0, -1)
+                        active_count = 0
+                        for active_id in active_ids:
+                            pipe.watch(self.key(active_id))
+                            raw = pipe.get(self.key(active_id))
+                            if raw and json.loads(raw)["status"] not in TERMINAL:
+                                active_count += 1
+                            else:
+                                finished.append(active_id)
+                        if active_count >= settings["public_pending_limit"]:
+                            raise QueueFull("已有未完成检测，请等待结束后再提交")
+                        record["client_hash"] = client_hash
                     pipe.multi()
                     self.enqueue(pipe, record, encrypted)
+                    if anonymous:
+                        pipe.zremrangebyscore(rate_key, "-inf", now - 3600)
+                        pipe.zadd(rate_key, {record["id"]: now})
+                        pipe.expire(rate_key, 3600)
+                        if finished:
+                            pipe.zrem(active_key, *finished)
+                        pipe.zadd(active_key, {record["id"]: now})
+                        pipe.expire(active_key, self.queue_timeout + self.task_timeout)
                     pipe.execute()
                     return record
                 except WatchError:
@@ -123,9 +181,18 @@ class DetectionStore:
                     if done:
                         pipe.delete(self.credential_key(task_id))
                         pipe.lrem(QUEUE, 0, task_id)
+                        pipe.lrem(PUBLIC_QUEUE, 0, task_id)
+                        pipe.zrem(PUBLIC_RUNNING, task_id)
                         pipe.zrem(LEASES, task_id)
+                        if record.get("client_hash"):
+                            pipe.zrem(f"modeltrace:public:pending:{record['client_hash']}", task_id)
+                        if record.get("public_id"):
+                            pipe.expire(self.public_key(record["public_id"]), self.retention)
+                            pipe.zadd(PUBLIC_EXPIRY, {record["public_id"]: now + self.retention})
                     else:
                         pipe.zadd(LEASES, {task_id: record["lease_until"]})
+                        if record.get("task_class") == "public" and record["status"] == "running":
+                            pipe.zadd(PUBLIC_RUNNING, {task_id: record["lease_until"]})
                     pipe.execute()
                     return record
                 except WatchError:
@@ -140,10 +207,17 @@ class DetectionStore:
         while True:
             with self.redis.pipeline() as pipe:
                 try:
-                    pipe.watch(QUEUE)
+                    pipe.watch(QUEUE, PUBLIC_QUEUE, PUBLIC_RUNNING, SETTINGS)
+                    queue = QUEUE
                     task_id = pipe.lindex(QUEUE, 0)
                     if not task_id:
-                        return None
+                        settings = SiteSettings(self.redis).get(pipe)
+                        if pipe.zcard(PUBLIC_RUNNING) >= settings["public_concurrency"]:
+                            return None
+                        queue = PUBLIC_QUEUE
+                        task_id = pipe.lindex(queue, 0)
+                        if not task_id:
+                            return None
                     key = self.key(task_id)
                     pipe.watch(key)
                     raw = pipe.get(key)
@@ -156,10 +230,12 @@ class DetectionStore:
                     else:
                         record = None
                     pipe.multi()
-                    pipe.lpop(QUEUE)
+                    pipe.lpop(queue)
                     if record:
                         pipe.set(key, json.dumps(record), ex=self.retention + self.task_timeout)
                         pipe.zadd(LEASES, {task_id: record["lease_until"]})
+                        if queue == PUBLIC_QUEUE:
+                            pipe.zadd(PUBLIC_RUNNING, {task_id: record["lease_until"]})
                     pipe.execute()
                     if record:
                         return record
@@ -193,11 +269,34 @@ class DetectionStore:
             if self.update(task_id, mutate) is None:
                 self.redis.zrem(LEASES, task_id)
                 self.redis.lrem(QUEUE, 0, task_id)
+                self.redis.lrem(PUBLIC_QUEUE, 0, task_id)
+                self.redis.zrem(PUBLIC_RUNNING, task_id)
                 self.redis.delete(self.credential_key(task_id))
+        self.cleanup_public_results()
+
+    def cleanup_public_results(self):
+        # Indexes have no Redis TTL; expire their members with the task retention.
+        while True:
+            with self.redis.pipeline() as pipe:
+                try:
+                    pipe.watch(PUBLIC_EXPIRY)
+                    expired = pipe.zrangebyscore(PUBLIC_EXPIRY, "-inf", time.time(), start=0, num=1000)
+                    if not expired:
+                        return
+                    pipe.multi()
+                    pipe.zrem(PUBLIC_INDEX, *expired)
+                    pipe.zrem(PUBLIC_VISIBLE_INDEX, *expired)
+                    pipe.zrem(PUBLIC_EXPIRY, *expired)
+                    pipe.delete(*(self.public_key(public_id) for public_id in expired))
+                    pipe.execute()
+                    if len(expired) < 1000:
+                        return
+                except WatchError:
+                    continue
 
 
 def public_record(record):
-    hidden = {"queue_deadline", "deadline", "lease_until", "public_access"}
+    hidden = {"queue_deadline", "deadline", "lease_until", "public_access", "task_class", "monitor_id", "public_id", "feed_hidden", "client_hash"}
     result = {key: value for key, value in record.items() if key not in hidden}
     start = record["started_at"]
     result["elapsed_seconds"] = round((record["finished_at"] or time.time()) - start, 2) if start else 0

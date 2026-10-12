@@ -4,6 +4,7 @@ import json
 import math
 import re
 import secrets
+import os
 from hashlib import sha256
 from pathlib import Path
 
@@ -16,15 +17,25 @@ from bank_builder import build_bank, read_rows
 
 from detection_api import api as detection_api
 from monitor_api import api as monitor_api
+from admin_auth import api as admin_auth
+from public_api import api as public_api
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 app.register_blueprint(detection_api)
 app.register_blueprint(monitor_api)
+app.register_blueprint(admin_auth)
+app.register_blueprint(public_api)
+proxy_hops = int(os.getenv("TRUSTED_PROXY_HOPS", "0"))
+if proxy_hops < 0 or proxy_hops > 5:
+    raise ValueError("TRUSTED_PROXY_HOPS 必须为 0～5")
+if proxy_hops:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=proxy_hops, x_proto=proxy_hops)
 PROJECT = Path(__file__).resolve().parent
 STATUS_ASSETS = {
     name: sha256((PROJECT / "static" / name).read_bytes()).hexdigest()[:16]
-    for name in ("status.css", "status.js")
+    for name in ("status.css", "status.js", "public.css", "public.js", "admin-login.js", "admin-site.js", "admin-client.js")
 }
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
 UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
@@ -175,7 +186,19 @@ def home():
 def status_page():
     assets = {name: url_for("status_asset", version=version, filename=name)
               for name, version in STATUS_ASSETS.items()}
+    return render_template("public.html", assets=assets), 200, {"Cache-Control": "no-store"}
+
+
+@app.get("/admin")
+def admin_page():
+    assets = {name: url_for("status_asset", version=version, filename=name) for name, version in STATUS_ASSETS.items()}
     return render_template("status.html", assets=assets), 200, {"Cache-Control": "no-store"}
+
+
+@app.get("/admin/login")
+def admin_login_page():
+    assets = {name: url_for("status_asset", version=version, filename=name) for name, version in STATUS_ASSETS.items()}
+    return render_template("admin-login.html", assets=assets), 200, {"Cache-Control": "no-store"}
 
 
 @app.get("/status/assets/<version>/<filename>")

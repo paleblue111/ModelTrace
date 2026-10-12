@@ -11,7 +11,7 @@ def validate_config(payload, partial=False, current=None):
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
     required = {"url", "key", "model", "reasoning_effort", "interval_seconds"}
-    allowed = required | {"name"}
+    allowed = required | {"name", "published", "public_name", "public_order"}
     if partial:
         allowed.add("enabled")
     if set(payload) - allowed:
@@ -21,6 +21,14 @@ def validate_config(payload, partial=False, current=None):
     current = current or {}
     if "name" in payload and (not isinstance(payload["name"], str) or len(payload["name"].strip()) > 80):
         raise ValueError("监测名称最多 80 个字符")
+    if "published" in payload and not isinstance(payload["published"], bool):
+        raise ValueError("公开展示必须为布尔值")
+    if "public_name" in payload and (not isinstance(payload["public_name"], str) or len(payload["public_name"].strip()) > 80):
+        raise ValueError("公开名称最多 80 个字符")
+    if "public_order" in payload and (type(payload["public_order"]) is not int or not 0 <= payload["public_order"] <= 10000):
+        raise ValueError("展示顺序必须为 0～10000 的整数")
+    publication = {key: payload[key].strip() if key == "public_name" else payload[key]
+                   for key in ("published", "public_name", "public_order") if key in payload}
     # Reuse the four-field API's validation without exposing stored credentials.
     parsed = {}
     if not partial or set(payload) & {"url", "key", "model", "reasoning_effort"}:
@@ -37,12 +45,13 @@ def validate_config(payload, partial=False, current=None):
     if "enabled" in payload and not isinstance(payload["enabled"], bool):
         raise ValueError("enabled 必须为布尔值")
     if not partial:
-        return {**parsed, "name": payload.get("name", "").strip(), "interval_seconds": payload["interval_seconds"]}
+        return {**parsed, **publication, "name": payload.get("name", "").strip(), "interval_seconds": payload["interval_seconds"]}
     names = {"url": "base_url", "key": "api_key", "model": "model", "reasoning_effort": "reasoning_effort"}
     changes = {("api_key" if key == "key" else key): parsed[value] for key, value in names.items() if key in payload}
     changes.update({key: payload[key] for key in ("interval_seconds", "enabled") if key in payload})
     if "name" in payload:
         changes["name"] = payload["name"].strip()
+    changes.update(publication)
     return changes
 
 

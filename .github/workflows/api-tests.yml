@@ -1,9 +1,9 @@
 name: Async detection API tests
 on:
   push:
-    paths: ['*.py', 'requirements*.txt', 'tests/**', 'templates/**', 'static/*.js', 'static/status.css', 'Dockerfile', 'compose.yaml', '.github/workflows/api-tests.yml']
+    paths: ['*.py', 'requirements*.txt', 'tests/**', 'templates/**', 'static/*.js', 'static/*.css', 'Dockerfile', 'compose.yaml', '.github/workflows/api-tests.yml']
   pull_request:
-    paths: ['*.py', 'requirements*.txt', 'tests/**', 'templates/**', 'static/*.js', 'static/status.css', 'Dockerfile', 'compose.yaml', '.github/workflows/api-tests.yml']
+    paths: ['*.py', 'requirements*.txt', 'tests/**', 'templates/**', 'static/*.js', 'static/*.css', 'Dockerfile', 'compose.yaml', '.github/workflows/api-tests.yml']
 permissions:
   contents: read
 jobs:
@@ -17,8 +17,10 @@ jobs:
       - run: pip install -r requirements-browser.txt
       - run: python -m pytest -q
       - run: node --check static/status.js
+      - run: node --check static/public.js && node --check static/admin-client.js && node --check static/admin-site.js && node --check static/admin-login.js
       - run: python -m playwright install --with-deps chromium
       - run: python tests/status_browser.py
+      - run: python tests/public_browser.py
       - name: Validate Compose and build image
         run: |
           docker compose config --quiet

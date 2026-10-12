@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>模型身份监测 · CodexPRO</title><link rel="stylesheet" href="{{ assets['status.css'] }}"><link rel="stylesheet" href="{{ assets['public.css'] }}"></head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brand-symbol" aria-hidden="true">C<span>↗</span></span>CodexPRO</a>
+    <div class="nav-caption">PUBLIC OBSERVATORY</div>
+    <a class="nav-item selected" href="#featured"><span>◉</span>精选监测<span class="nav-dot"></span></a>
+    <a class="nav-item" href="#public-tests"><span>↗</span>公开检测</a>
+    <section class="monitor-library" aria-label="精选监测"><div class="library-heading"><h3>精选监测 <span id="featured-count" class="count">0</span></h3><button id="public-refresh" class="text-button" type="button">↻ 刷新</button></div><p class="library-summary">管理员精选 · 结果实时更新</p><div id="monitor-list" class="monitor-list"><div class="empty"><strong>正在加载精选监测</strong></div></div></section>
+    <div class="sidebar-bottom"><span class="server-dot"></span>持续观察模型身份<p>公开结果仅供参考，检测由服务器执行。</p><a class="text-button" href="/admin">管理员入口 →</a></div>
+  </aside>
+  <div class="page"><header class="topbar"><span>公开首页 <b>/</b> <strong>模型身份监测</strong></span><a href="/admin">管理后台 ↗</a></header><main>
+    <section class="page-heading"><div><div class="eyebrow">MODEL IDENTITY OBSERVATORY</div><h1 id="home-title">每一次调用，都有迹可循。</h1><p id="home-description">持续观察模型的真实身份，查看精选监测与公开检测结果。</p></div><a class="button primary" href="#public-tests">发起检测 ↗</a></section>
+    <div id="public-notice" class="notice" role="status" hidden></div>
+    <div id="home-announcement" class="notice site-announcement" hidden></div>
+    <section id="featured" class="featured-section"><div class="section-heading"><div><span class="eyebrow">CURATED MONITORS</span><h2>管理员精选监测</h2></div><span class="muted">自动更新最新结果</span></div><div id="featured-detail" class="panel"><div class="empty"><strong>暂无公开监测</strong><p>管理员公开监测后，最新结果将在这里显示。</p></div></div></section>
+    <section id="public-tests" class="public-tests"><div class="section-heading"><div><span class="eyebrow">OPEN DETECTIONS</span><h2>公开检测</h2></div><span class="badge success">无需注册 · 单次检测</span></div>
+      <article class="panel submission-panel"><div class="panel-heading"><div><h3>检测你正在使用的模型</h3><p>填写自己的连接，完成一次模型身份检测。</p></div><span class="small-square">↗</span></div>
+        <form id="public-test-form" class="public-test-form"><fieldset id="public-test-fields" disabled><div class="form-row"><label>接口地址<input id="test-url" type="url" required maxlength="4096" placeholder="https://api.example.com/v1"></label><label>API Key<input id="test-key" type="password" required maxlength="4096" autocomplete="off" placeholder="输入你自己的上游 Key"></label></div><div class="form-row"><label>模型名称<input id="test-model" required maxlength="4096" placeholder="上游接受的模型名或别名"></label><label>思考强度<select id="test-effort"><option>none</option><option>minimal</option><option>low</option><option selected>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label></div><div class="submission-footer"><p class="form-help">检测结果会出现在下方公共列表，所有人可查看。Key 和完整接口地址不会公开。每轮最多调用上游 6 次，使用你的 Key，可能产生费用。</p><button id="test-submit" class="button primary" type="submit">开始单次检测 ↗</button></div></fieldset><p id="test-error" class="form-error" role="alert" hidden></p><p id="test-success" class="submission-success" role="status" hidden></p></form>
+      </article>
+      <article class="panel public-history"><div class="panel-heading"><div><h3>所有人的检测记录 <span id="public-total" class="count">0</span></h3><p>按提交时间排列 · 点击记录查看结果详情</p></div><span class="muted">自动更新</span></div><div class="table-wrap"><table><thead><tr><th>提交时间</th><th>请求模型</th><th>指纹归因</th><th>概率</th><th>样本</th><th>状态</th><th>完成时间</th></tr></thead><tbody id="public-history"><tr><td colspan="7"><div class="empty history-empty"><strong>还没有公开检测记录</strong><p>提交第一轮检测，结果将自动更新。</p></div></td></tr></tbody></table></div><div class="pagination"><button id="public-prev" class="button secondary" type="button" disabled>上一页</button><span id="public-page">第 1 / 1 页</span><button id="public-next" class="button secondary" type="button" disabled>下一页</button></div></article>
+    </section>
+    <footer>指纹归因是参考库内的统计判断，不能作为模型身份的绝对证明。<span>CodexPRO · 持续观察，而非盲目信任</span></footer>
+  </main></div>
+  <dialog id="public-detail-dialog" aria-labelledby="public-detail-title"><div class="dialog-heading"><h2 id="public-detail-title">检测详情</h2><button id="public-detail-close" class="icon-button" type="button" aria-label="关闭详情">×</button></div><div id="public-detail-content"></div></dialog>
+  <script type="module" src="{{ assets['public.js'] }}"></script>
+</body></html>

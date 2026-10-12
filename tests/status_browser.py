@@ -79,11 +79,11 @@ def complete(monitor_id, valid=3):
 try:
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        context = browser.new_context(viewport={'width':1440,'height':1100}, device_scale_factor=1)
+        context = browser.new_context(extra_http_headers={'Authorization':'Bearer browser-test-admin'}, viewport={'width':1440,'height':1100}, device_scale_factor=1)
         page = context.new_page()
         errors = []
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.goto(base + '/status')
+        page.goto(base + '/admin')
         expect(page.locator('h1')).to_contain_text('每一次调用')
         page.screenshot(path=str(output / 'empty-desktop.png'), full_page=True)
         page.locator('#monitor-add').click()
@@ -96,7 +96,7 @@ try:
         page.locator('#save').click()
         expect(page.locator('#settings-dialog')).not_to_be_visible()
         monitor_id = monitors.default()['id']
-        assert page.url == base + '/status#monitor=' + monitor_id
+        assert page.url == base + '/admin#monitor=' + monitor_id
         assert 'test-upstream-key' not in page.evaluate('JSON.stringify(localStorage)')
         assert not monitors.get(monitor_id)['enabled']
         heartbeat()
@@ -110,14 +110,14 @@ try:
         assert len(page.locator('#candidates .candidate').all()) == 5
         page.screenshot(path=str(output / 'status-desktop.png'), full_page=True)
         # An independent browser ignores its old local IDs and loads the shared panel.
-        other_context = browser.new_context()
+        other_context = browser.new_context(extra_http_headers={'Authorization':'Bearer browser-test-admin'})
         other_context.add_init_script('localStorage.setItem("modeltrace-monitor", "ffffffffffffffffffffffffffffffff"); localStorage.setItem("modeltrace-dashboard", "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")')
         other_page = other_context.new_page()
-        other_page.goto(base + '/')
+        other_page.goto(base + '/admin')
         expect(other_page.locator('#target-model')).to_have_text('gpt-6-sol')
         expect(other_page.locator('#history tr[data-id]')).to_have_count(1)
         expect(other_page.locator('#result-badge')).to_have_text('完整结果')
-        assert other_page.url == base + '/status#monitor=' + monitor_id
+        assert other_page.url == base + '/admin#monitor=' + monitor_id
         other_context.close()
         page.locator('#history tr[data-id]').click()
         expect(page.locator('#history-dialog')).to_be_visible()
@@ -142,7 +142,7 @@ try:
         heartbeat()
         page = context.new_page()
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.goto(base + '/status')
+        page.goto(base + '/admin')
         expect(page.locator('#result-badge')).to_have_text('样本不足')
         expect(page.locator('#history tr[data-id]')).to_have_count(2)
         page.locator('#toggle').click()
@@ -182,9 +182,9 @@ try:
         assert monitors.get(second_id)['enabled'] and monitors.get(third_id)['enabled']
         assert monitors.get(second_id)['interval_seconds'] == 900
         assert monitors.get(third_id)['interval_seconds'] == 3600
-        assert page.url == base + '/status#monitor=' + third_id
+        assert page.url == base + '/admin#monitor=' + third_id
         board_id = monitors.default_dashboard()['id']
-        saved_url = base + f'/status#dashboard={board_id}&monitor={third_id}'
+        saved_url = base + f'/admin#dashboard={board_id}&monitor={third_id}'
         assert set(monitors.get_dashboard(board_id)['monitor_ids']) == {monitor_id, second_id, third_id}
         assert not any(secret in page.evaluate('JSON.stringify(localStorage)') for secret in ('test-upstream-key', 'second-provider-secret'))
         page.close()
@@ -193,10 +193,10 @@ try:
         heartbeat()
 
         # A fresh browser restores all items from the server using one bookmark.
-        fresh_context = browser.new_context(viewport={'width':1440,'height':1100})
+        fresh_context = browser.new_context(extra_http_headers={'Authorization':'Bearer browser-test-admin'}, viewport={'width':1440,'height':1100})
         page = fresh_context.new_page()
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.goto(base + '/status')
+        page.goto(base + '/admin')
         expect(page.locator('.monitor-tile')).to_have_count(3)
         expect(page.locator('#target-model')).to_have_text('gpt-6-sol-updated')
         # Explicit bookmarks still select the requested item.
@@ -239,16 +239,16 @@ try:
         page.get_by_role('button', name='关闭设置', exact=True).click()
 
         # Legacy bookmarks are adopted without recreating the original monitor.
-        legacy_context = browser.new_context()
+        legacy_context = browser.new_context(extra_http_headers={'Authorization':'Bearer browser-test-admin'})
         legacy_page = legacy_context.new_page()
         legacy_page.on('pageerror', lambda error: errors.append(str(error)))
         before = monitors.get(monitor_id)
-        legacy_page.goto(base + '/status#monitor=' + monitor_id)
+        legacy_page.goto(base + '/admin#monitor=' + monitor_id)
         expect(legacy_page.locator('#target-model')).to_have_text(before['model'])
         expect(legacy_page.locator('#history tr[data-id]')).to_have_count(2)
         assert monitors.get(monitor_id) == before
         expect(legacy_page.locator('.monitor-tile')).to_have_count(3)
-        legacy_page.goto(base + '/status#monitor=' + monitor_id)
+        legacy_page.goto(base + '/admin#monitor=' + monitor_id)
         legacy_page.reload()
         expect(legacy_page.locator('.monitor-tile')).to_have_count(3)
         assert len(list(backend.redis.scan_iter('modeltrace:dashboard:*'))) == 1
@@ -258,8 +258,8 @@ try:
         legacy_page.reload()
         expect(legacy_page.locator('#target-model')).to_have_text('gpt-6.1-sol')
         # Failed initialization must remain retryable, including legacy migration POSTs.
-        for suffix, failed_endpoint in [('/status', '**/status/api/dashboards/default'),
-                                        ('/status#monitor=' + monitor_id, '**/status/api/dashboards')]:
+        for suffix, failed_endpoint in [('/admin', '**/status/api/dashboards/default'),
+                                        ('/admin#monitor=' + monitor_id, '**/status/api/dashboards')]:
             recovery = fresh_context.new_page()
             recovery.on('pageerror', lambda error: errors.append(str(error)))
             recovery.route(failed_endpoint, lambda route: route.fulfill(status=503, content_type='application/json', body='{"error":"temporary outage"}'))
@@ -275,7 +275,7 @@ try:
         # A delayed save must lock the form and must not overwrite a newly opened panel.
         editing_page = fresh_context.new_page()
         editing_page.on('pageerror', lambda error: errors.append(str(error)))
-        editing_page.goto(base + '/status#monitor=' + monitor_id)
+        editing_page.goto(base + '/admin#monitor=' + monitor_id)
         expect(editing_page.locator('#target-model')).to_have_text(before['model'])
         editing_page.locator('#settings-open').click()
         editing_page.locator('#config-name').fill('保存中的名称')
@@ -288,7 +288,7 @@ try:
         editing_page.keyboard.press('Escape')
         expect(editing_page.locator('#settings-dialog')).to_be_visible()
         isolated = monitors.create_dashboard()
-        isolated_url = base + '/status#dashboard=' + isolated['id']
+        isolated_url = base + '/admin#dashboard=' + isolated['id']
         editing_page.evaluate('(hash) => { location.hash = hash; }', '#dashboard=' + isolated['id'])
         expect(editing_page.locator('#settings-dialog')).not_to_be_visible()
         delay_release.set()
@@ -298,7 +298,7 @@ try:
         assert monitors.get(monitor_id)['name'] == '保存中的名称'
         editing_page.close()
         # Previously cached unversioned assets must never execute on the new page.
-        cached_context = browser.new_context()
+        cached_context = browser.new_context(extra_http_headers={'Authorization':'Bearer browser-test-admin'})
         cached_page = cached_context.new_page()
         cached_page.on('pageerror', lambda error: errors.append(str(error)))
         cache_seed['active'] = True
@@ -307,11 +307,11 @@ try:
         cache_seed['active'] = False
         asset_requests = []
         cached_page.on('request', lambda req: asset_requests.append(req.url))
-        cached_page.goto(base + '/status')
+        cached_page.goto(base + '/admin')
         expect(cached_page.locator('#monitor-add')).to_be_enabled()
         assert cached_page.evaluate('window.previousAssetLoaded') is None
         assert not any('/static/status.' in url for url in asset_requests)
-        assert sum('/status/assets/' in url for url in asset_requests) == 2
+        assert sum('/status/assets/' in url for url in asset_requests) == 5
         cached_page.locator('#monitor-add').click()
         expect(cached_page.locator('#settings-dialog')).to_be_visible()
         cached_context.close()
@@ -321,7 +321,7 @@ try:
         partial.on('pageerror', lambda error: errors.append(str(error)))
         broken_endpoint = '**/status/api/monitors/' + monitor_id
         partial.route(broken_endpoint, lambda route: route.fulfill(status=503, content_type='application/json', body='{"error":"detail unavailable"}'))
-        partial.goto(base + '/status')
+        partial.goto(base + '/admin')
         expect(partial.locator('#notice')).to_contain_text('详情加载失败')
         expect(partial.locator('.monitor-tile')).to_have_count(3)
         expect(partial.locator('#monitor-add')).to_be_enabled()
@@ -371,7 +371,7 @@ try:
 
         # Long model/provider names must not stretch tablet or mobile grids.
         monitors.update(monitor_id, {'name': '供应商' * 26, 'model': 'long-model-' * 50})
-        legacy_page.goto(base + '/status#monitor=' + monitor_id)
+        legacy_page.goto(base + '/admin#monitor=' + monitor_id)
         expect(legacy_page.locator('#target-model')).to_have_text('long-model-' * 50)
         for width in (320, 390, 768, 1024, 1440):
             legacy_page.set_viewport_size({'width': width, 'height': 1000})
@@ -380,11 +380,11 @@ try:
         # Deleting from the sidebar is cancellable and recovers from API errors.
         deletion = fresh_context.new_page()
         deletion.on('pageerror', lambda error: errors.append(str(error)))
-        deletion.goto(base + '/status#monitor=' + second_id)
+        deletion.goto(base + '/admin#monitor=' + second_id)
         expect(deletion.locator('#target-model')).to_have_text('gpt-6-astra')
         observe = fresh_context.new_page()
         observe.on('pageerror', lambda error: errors.append(str(error)))
-        observe.goto(base + '/status#monitor=' + monitor_id)
+        observe.goto(base + '/admin#monitor=' + monitor_id)
         expect(observe.locator('#target-model')).to_have_text('long-model-' * 50)
         remove_first = deletion.locator(f'[data-action="delete"][data-id="{monitor_id}"]')
         remove_first.click()
@@ -406,12 +406,12 @@ try:
         expect(deletion.locator('#delete-dialog')).not_to_be_visible()
         expect(deletion.locator('.monitor-tile')).to_have_count(2)
         expect(deletion.locator('#target-model')).to_have_text('gpt-6-astra')
-        assert deletion.url == base + '/status#monitor=' + second_id
+        assert deletion.url == base + '/admin#monitor=' + second_id
         assert monitors.get(monitor_id) is None
         observe.locator('#refresh').click()
         expect(observe.locator('.monitor-tile')).to_have_count(2)
         expect(observe.locator('#target-model')).to_have_text('gpt-6-astra')
-        observe.goto(base + '/status#monitor=' + monitor_id)
+        observe.goto(base + '/admin#monitor=' + monitor_id)
         expect(observe.locator('#monitor-add')).to_be_enabled()
         expect(observe.locator('#target-model')).to_have_text('gpt-6-astra')
 
@@ -428,7 +428,7 @@ try:
         expect(deletion.locator('#target-model')).to_have_text('gpt-6.1-sol')
         assert backend.get(removed_task['id'])['status'] == 'cancelled'
         assert monitors.get(third_id)['enabled']
-        assert deletion.url == base + '/status#monitor=' + third_id
+        assert deletion.url == base + '/admin#monitor=' + third_id
 
         # Last-item removal leaves a usable empty panel and survives reloads.
         deletion.set_viewport_size({'width':390,'height':844})
@@ -440,7 +440,7 @@ try:
         expect(deletion.locator('#monitor-details')).not_to_be_visible()
         expect(deletion.locator('#monitor-empty')).to_be_visible()
         expect(deletion.locator('#monitor-count')).to_have_text('0')
-        assert deletion.url == base + '/status'
+        assert deletion.url == base + '/admin'
         deletion.reload()
         expect(deletion.locator('#monitor-empty')).to_be_visible()
         expect(deletion.locator('#monitor-add')).to_be_enabled()

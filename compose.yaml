@@ -28,6 +28,7 @@ x-common: &common
     MAX_QUEUED_TASKS: ${MAX_QUEUED_TASKS:-100}
     UPSTREAM_ALLOWED_HOSTS: ${UPSTREAM_ALLOWED_HOSTS:-}
     ALLOW_PRIVATE_UPSTREAM: ${ALLOW_PRIVATE_UPSTREAM:-false}
+    TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
   depends_on:
     redis:
       condition: service_healthy

@@ -7,11 +7,12 @@ import uuid
 
 from redis import WatchError
 
-from detection_store import LEASES, QUEUE, TERMINAL, public_record
+from detection_store import LEASES, PUBLIC_QUEUE, PUBLIC_RUNNING, QUEUE, TERMINAL, public_record
 
 DUE = "modeltrace:monitors:due"
 DEFAULT = "modeltrace:monitors:default"
 DEFAULT_DASHBOARD = "modeltrace:dashboards:default"
+VISIBILITY_VERSION = "modeltrace:migrations:public-site-v1"
 
 
 class MonitorBusy(ValueError):
@@ -34,6 +35,67 @@ class MonitorStore:
     def get(self, monitor_id):
         raw = self.redis.get(self.key(monitor_id))
         return json.loads(raw) if raw else None
+
+    def migrate_visibility(self):
+        if self.redis.get(VISIBILITY_VERSION):
+            return
+        while True:
+            with self.redis.pipeline() as pipe:
+                try:
+                    pipe.watch(VISIBILITY_VERSION, QUEUE, PUBLIC_QUEUE, PUBLIC_RUNNING)
+                    if pipe.get(VISIBILITY_VERSION):
+                        return
+                    records = []
+                    monitor_tasks = set()
+                    for key in self.redis.scan_iter(match="modeltrace:monitor:*"):
+                        pipe.watch(key)
+                        raw = pipe.get(key)
+                        if not raw:
+                            continue
+                        record = json.loads(raw)
+                        record.setdefault("published", False)
+                        record.setdefault("public_name", "")
+                        record.setdefault("public_order", 0)
+                        record.setdefault("public_id", uuid.uuid4().hex)
+                        records.append((key, record))
+                        monitor_tasks.update(item["id"] for item in record["history"])
+                        if record["active_task_id"]:
+                            monitor_tasks.add(record["active_task_id"])
+                    tasks = []
+                    for key in self.redis.scan_iter(match="modeltrace:task:*"):
+                        pipe.watch(key)
+                        raw = pipe.get(key)
+                        if not raw:
+                            continue
+                        task = json.loads(raw)
+                        known_origin = "task_class" in task
+                        task.setdefault("task_class", "public" if task.get("public_access") else "admin")
+                        if task["id"] in monitor_tasks or task.get("monitor_id"):
+                            task["public_access"] = False
+                            task["task_class"] = "admin"
+                        elif not known_origin:
+                            # Old unreferenced records cannot prove whether they came from a monitor.
+                            # Keep executing them, but require administrator access to their result.
+                            task["public_access"] = False
+                        tasks.append((key, task, max(1, pipe.ttl(key))))
+                    old_queue = pipe.lrange(QUEUE, 0, -1)
+                    public_ids = {item[1]["id"] for item in tasks if item[1]["task_class"] == "public"}
+                    pipe.multi()
+                    for key, record in records:
+                        pipe.set(key, json.dumps(record))
+                    for key, task, ttl in tasks:
+                        pipe.set(key, json.dumps(task), ex=ttl)
+                        if task["task_class"] == "public" and task["status"] == "running":
+                            pipe.zadd(PUBLIC_RUNNING, {task["id"]: task["lease_until"]})
+                    for task_id in old_queue:
+                        if task_id in public_ids:
+                            pipe.lrem(QUEUE, 0, task_id)
+                            pipe.rpush(PUBLIC_QUEUE, task_id)
+                    pipe.set(VISIBILITY_VERSION, "1")
+                    pipe.execute()
+                    return
+                except WatchError:
+                    continue
 
     def default(self, config=None):
         """Resolve one shared monitor, adopting the oldest existing configuration."""
@@ -70,6 +132,8 @@ class MonitorStore:
         now = time.time()
         record = {"id": uuid.uuid4().hex, "created_at": now, "updated_at": now,
                   "name": config.get("name", ""),
+                  "published": config.get("published", False), "public_name": config.get("public_name", ""),
+                  "public_order": config.get("public_order", 0), "public_id": uuid.uuid4().hex,
                   "url": config["base_url"], "model": config["model"],
                   "reasoning_effort": config["reasoning_effort"], "interval_seconds": config["interval_seconds"],
                   "encrypted_key": self.tasks.cipher.encrypt(config["api_key"].encode()).decode(),
@@ -200,7 +264,7 @@ class MonitorStore:
     def summary(record):
         # Polling a list must not transfer every monitor's samples and history.
         fields = ("id", "name", "url", "model", "reasoning_effort", "interval_seconds", "enabled",
-                  "run_requested", "active_task_id", "next_run_at", "updated_at", "last_error", "total_runs")
+                  "run_requested", "active_task_id", "next_run_at", "updated_at", "last_error", "total_runs", "published", "public_name", "public_order")
         data = {field: record.get(field) for field in fields}
         latest = record["history"][0] if record["history"] else None
         result = (latest.get("result") or {}) if latest else {}
@@ -235,7 +299,7 @@ class MonitorStore:
                     if changes.get("run_requested") and (record["active_task_id"] or record["run_requested"]):
                         raise MonitorBusy("已有检测任务，完成后再试")
                     now = time.time()
-                    for field in ("name", "url", "model", "reasoning_effort", "interval_seconds", "enabled", "run_requested"):
+                    for field in ("name", "url", "model", "reasoning_effort", "interval_seconds", "enabled", "run_requested", "published", "public_name", "public_order"):
                         if field in changes:
                             record[field] = changes[field]
                     if changes.get("api_key"):
@@ -313,7 +377,7 @@ class MonitorStore:
         while True:
             with self.redis.pipeline() as pipe:
                 try:
-                    pipe.watch(self.key(monitor_id), QUEUE)
+                    pipe.watch(self.key(monitor_id), QUEUE, PUBLIC_QUEUE)
                     raw = pipe.get(self.key(monitor_id))
                     if not raw:
                         pipe.multi()
@@ -338,7 +402,7 @@ class MonitorStore:
                             # No catch-up burst after downtime: schedule relative to observation of completion.
                             record["next_run_at"] = now + record["interval_seconds"] if record["enabled"] else None
                     elif (record["enabled"] or record["run_requested"]) and (record["next_run_at"] or 0) <= now:
-                        if pipe.llen(QUEUE) >= self.tasks.queue_limit:
+                        if pipe.llen(QUEUE) + pipe.llen(PUBLIC_QUEUE) >= self.tasks.queue_limit:
                             record["last_error"] = "检测队列已满，30 秒后重试"
                             record["next_run_at"] = now + 30
                         else:
@@ -349,7 +413,7 @@ class MonitorStore:
                                               last_error="无法解密保存的 Key，请在设置中重新填写并保存")
                             else:
                                 new_task = self.tasks.prepare({"base_url": record["url"], "api_key": api_key,
-                                    "model": record["model"], "reasoning_effort": record["reasoning_effort"], "public_access": True})
+                                    "model": record["model"], "reasoning_effort": record["reasoning_effort"], "monitor_id": record["id"], "public_access": False})
                                 record.update(active_task_id=new_task[0]["id"], next_run_at=None,
                                               run_requested=False, last_error=None)
                     record["updated_at"] = now

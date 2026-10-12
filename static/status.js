@@ -1,3 +1,4 @@
+const {adminFetch} = await import(document.body.dataset.adminClient);
 const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const labels = {queued:'排队中',running:'检测中',completed:'完整结果',partial:'样本不足',failed:'检测失败',cancelled:'已取消',interrupted:'执行中断'};
@@ -35,7 +36,7 @@ async function request(url, options = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(url, {...options, headers:{'Content-Type':'application/json', ...options.headers}, signal:controller.signal});
+    const response = await adminFetch(url, {...options, headers:{'Content-Type':'application/json', ...options.headers}, signal:controller.signal});
     let data;
     try { data = await response.json(); } catch { throw new Error('服务器未返回有效数据，请检查服务是否启动'); }
     if (!response.ok) {
@@ -89,7 +90,7 @@ function renderList() {
       <button type="button" class="monitor-select" data-action="select" data-id="${escape(item.id)}" aria-pressed="${item.id === monitorId}">
         <span class="tile-heading"><strong>${escape(title(item))}</strong><span class="badge ${item.enabled ? 'success' : 'neutral'}">${status}</span></span>
         <span class="tile-provider" title="${escape(item.url)}">${escape(item.url)}</span>
-        <span class="tile-model">${escape(item.model)} · ${escape(item.reasoning_effort)} · 每 ${item.interval_seconds/60} 分钟</span>
+        <span class="tile-model">${escape(item.model)} · ${escape(item.reasoning_effort)} · 每 ${item.interval_seconds/60} 分钟 · ${item.published ? '已公开' : '仅后台'}</span>
         <span class="tile-result">${latest ? `<b>${escape(latest.prediction_name || labels[latest.status] || '暂无归因')}</b> · ${pct(latest.probability)}<br>${escape(labels[latest.status] || '未知')} · 样本 ${latest.valid_samples}/3 · ${escape(date(latest.finished_at))}` : '等待第一轮检测<br>结果与历史独立保存'}</span>
       </button>
       <div class="tile-actions"><button type="button" class="button tile-delete" data-action="delete" data-id="${escape(item.id)}" aria-label="删除 ${escape(title(item))}" ${busy || !ready ? 'disabled' : ''}>删除</button><button type="button" class="button secondary" data-action="run" data-id="${escape(item.id)}" ${busy || inProgress || !ready ? 'disabled' : ''}>立即检测</button><button type="button" class="button ${item.enabled ? 'secondary' : 'primary'}" data-action="toggle" data-id="${escape(item.id)}" ${busy || !ready ? 'disabled' : ''}>${item.enabled ? '暂停监测' : '开启监测'}</button></div>
@@ -236,6 +237,9 @@ function openSettings(mode = 'edit') {
   $('config-effort').value = source?.reasoning_effort || 'medium';
   $('config-interval').value = (source?.interval_seconds || 1800)/60;
   $('config-key').value = '';
+  $('config-published').checked = mode === 'edit' && Boolean(source?.published);
+  $('config-public-name').value = mode === 'edit' ? source?.public_name || '' : '';
+  $('config-public-order').value = mode === 'edit' ? source?.public_order || 0 : 0;
   updateKeyHint();
   $('settings-error').hidden = true;
   $('settings-dialog').showModal();
@@ -256,7 +260,7 @@ async function saveSettings(event) {
   const expectedRevision = ++revision;
   lockSettings(true);
   $('settings-error').hidden = true;
-  const config = {name:$('config-name').value.trim(),url:$('config-url').value.trim(),model:$('config-model').value.trim(),reasoning_effort:$('config-effort').value,interval_seconds:Number($('config-interval').value)*60};
+  const config = {name:$('config-name').value.trim(),url:$('config-url').value.trim(),model:$('config-model').value.trim(),reasoning_effort:$('config-effort').value,interval_seconds:Number($('config-interval').value)*60,published:$('config-published').checked,public_name:$('config-public-name').value.trim(),public_order:Number($('config-public-order').value)};
   if ($('config-key').value || (!editingId && !sourceId)) config.key = $('config-key').value;
   if (sourceId) config.source_monitor_id = sourceId;
   render();

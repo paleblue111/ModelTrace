@@ -39,12 +39,13 @@ def responses_url(base_url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-def connect_upstream(parts, timeout: float):
+def connect_upstream(parts, timeout: float, allow_private: bool | None = None):
     """Pin the validated DNS address, retaining the original TLS SNI and Host."""
     host = parts.hostname
     port = parts.port or (443 if parts.scheme == "https" else 80)
     addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    allow_private = os.getenv("ALLOW_PRIVATE_UPSTREAM", "false").lower() == "true"
+    if allow_private is None:
+        allow_private = os.getenv("ALLOW_PRIVATE_UPSTREAM", "false").lower() == "true"
     if not allow_private and any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
         raise UpstreamError("禁止访问本机、内网或保留地址的上游服务")
     if not addresses:
@@ -66,7 +67,8 @@ def connect_upstream(parts, timeout: float):
 
 def request_response(base_url: str, api_key: str, model: str, prompt: str,
                      temperature: float | None = None, system_prompt: str = "",
-                     timeout: float = 240, reasoning_effort: str | None = None) -> dict:
+                     timeout: float = 240, reasoning_effort: str | None = None,
+                     allow_private: bool | None = None) -> dict:
     parts = urlsplit(responses_url(base_url))
     body = {"model": model, "input": [{"role": "user", "content": prompt}],
             "store": False, "stream": False}
@@ -78,7 +80,7 @@ def request_response(base_url: str, api_key: str, model: str, prompt: str,
         body["reasoning"] = {"effort": reasoning_effort}
     connection = None
     try:
-        connection = connect_upstream(parts, timeout)
+        connection = connect_upstream(parts, timeout, allow_private)
         connection.request("POST", parts.path, json.dumps(body).encode(), {
             "Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
             "Accept": "application/json", "User-Agent": "ModelTrace/1.0",

@@ -1,0 +1,46 @@
+.section-heading{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 18px}
+.page-heading>div{min-width:0}
+.page-heading h1,.page-heading p{overflow-wrap:anywhere}
+.section-heading h2{font-size:20px;font-weight:600;margin:8px 0 0}
+.featured-section{scroll-margin-top:20px}
+.public-tests{margin-top:36px;scroll-margin-top:20px}
+.featured-header{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:22px 24px;border-bottom:1px solid var(--line)}
+.featured-header h3{font-size:18px;margin:0 0 7px;overflow-wrap:anywhere}
+.featured-header p{margin:0;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.public-result{padding:24px}
+.public-result h3{font-size:24px;overflow-wrap:anywhere;margin:12px 0}
+.public-result .result-metrics{padding-top:18px;margin-top:20px}
+.public-candidates{margin-top:18px;border-top:1px solid var(--line);padding-top:10px}
+.public-history{margin-top:20px}
+.public-test-form{padding:23px 24px}
+fieldset{padding:0;margin:0;min-width:0;border:0}
+.submission-footer{display:flex;align-items:center;gap:24px;justify-content:space-between}
+.submission-footer .form-help{max-width:660px;margin:0}
+.submission-success{font-size:12px;color:#216c50;margin:16px 0 0;line-height:1.8}
+.pagination{display:flex;align-items:center;justify-content:flex-end;gap:14px;padding:16px 24px;border-top:1px solid var(--line)}
+.pagination>span{font-size:11px;color:var(--muted)}
+.site-announcement{white-space:pre-wrap;overflow-wrap:anywhere;background:#edf6f0;border-color:#d7e9dc;color:#4c7d5b}
+.public-result-note{font-size:12px;color:var(--muted);line-height:1.8}
+.public-history tr[data-public-id],.featured-history tr[data-history-index]{cursor:pointer}
+.public-history tr[data-public-id]:hover,.featured-history tr[data-history-index]:hover{background:#f7faf8}
+#public-detail-dialog{width:min(620px,calc(100vw - 30px))}
+.login-body{min-height:100vh;display:grid;place-items:center;padding:24px}
+.login-panel{width:min(420px,100%);padding:32px}
+.login-panel .brand{margin-bottom:28px}
+.login-panel h1{font-size:23px;margin:0 0 12px}
+.login-panel>p{font-size:12px;color:var(--muted);line-height:1.8;margin-bottom:24px}
+.login-panel .button{width:100%}
+.login-back{display:block;text-align:center;margin-top:20px;font-size:12px;color:var(--muted)}
+.admin-tools{display:flex;align-items:center;gap:14px}
+.admin-site-panel{margin-top:24px}
+.admin-site-form{padding:24px}
+textarea{display:block;width:100%;min-height:88px;border:1px solid #dfe6e0;border-radius:6px;padding:10px 11px;margin-top:8px;color:#34483a;font:inherit;resize:vertical}
+.check-label{display:flex;align-items:center;gap:9px;line-height:1.6}
+.check-label input{width:16px;height:16px;margin:0;flex-shrink:0;accent-color:#216c50}
+.publication-fields{border-top:1px solid var(--line);padding-top:20px;margin-top:4px}
+.publication-fields .form-help{margin-bottom:16px}
+.admin-login-note{font-size:11px;color:var(--muted);line-height:1.8}
+.admin-moderation{margin-top:24px}
+.admin-topbar{display:flex;align-items:center;justify-content:space-between;gap:10px}
+@media(max-width:820px){.sidebar .nav-item{display:none}.sidebar .monitor-list{max-height:210px}.featured-header{padding:20px}.submission-footer{align-items:flex-start;flex-direction:column;gap:16px}.public-result{padding:20px}.admin-tools{gap:8px}}
+@media(max-width:620px){.page-heading>a.button{font-size:11px;padding:9px 10px;min-height:31px}.page-heading>a.button:after{content:none}.section-heading{align-items:flex-start}.section-heading .muted{font-size:10px}.section-heading h2{font-size:18px}.section-heading .badge{font-size:9px}.public-test-form,.admin-site-form{padding:20px}.public-test-form .form-row,.admin-site-form .form-row{grid-template-columns:1fr;gap:0}.submission-footer .button{width:100%}.featured-header{align-items:flex-start}.featured-header h3{font-size:16px}.pagination{justify-content:center;padding:14px}.public-tests{margin-top:28px}.admin-topbar>.admin-tools>a{display:none}.publication-fields .form-row{grid-template-columns:1fr;gap:0}}

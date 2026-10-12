@@ -350,7 +350,11 @@ def test_simple_api_four_fields_end_to_end(client, backend, upstream):
     assert response.headers['Location'] == f'/api?id={task_id}'
     assert 'upstream-secret' not in response.text
     assert 'public_access' not in response.text
-    worker.run_task(backend, backend.claim())
+    def local_fixture_probe(backend, task_id, configuration, deadline):
+        # Production anonymous tasks forbid private IPs; explicitly allow only this test's local fixture.
+        assert configuration['allow_private'] is False
+        return {'ok': True, **request_response(**{**configuration, 'allow_private': True})}
+    worker.run_task(backend, backend.claim(), local_fixture_probe)
     result = client.get(response.headers['Location'])
     assert result.status_code == 200
     assert result.json['status'] == 'completed'

@@ -7,7 +7,7 @@ import os
 from flask import Blueprint, current_app, jsonify, request
 from redis.exceptions import RedisError
 
-from detection_store import DetectionStore, QueueFull, TERMINAL, public_record
+from detection_store import DetectionStore, PublicDisabled, QueueFull, TERMINAL, public_record
 from responses_client import responses_url
 
 api = Blueprint("detections", __name__)
@@ -82,8 +82,10 @@ def submit():
         return jsonify(error=str(error)), 400
     try:
         backend = store()
+        from monitor_store import MonitorStore
+        MonitorStore(backend).migrate_visibility()
         backend.reap()
-        record = backend.submit(data)
+        record = backend.submit(data, client_ip=request.remote_addr)
         response = jsonify(response_record(record))
         response.status_code = 202
         response.headers["Location"] = response_record(record)["status_url"]
@@ -91,6 +93,8 @@ def submit():
         return response
     except QueueFull as error:
         return jsonify(error=str(error)), 429, {"Retry-After": "10"}
+    except PublicDisabled as error:
+        return jsonify(error=str(error)), 403
     except (RedisError, ValueError):
         return jsonify(error="任务存储暂不可用或未配置"), 503
 
@@ -101,6 +105,8 @@ def task(task_id):
         return jsonify(error="任务不存在或已过期"), 404
     try:
         backend = store()
+        from monitor_store import MonitorStore
+        MonitorStore(backend).migrate_visibility()
         backend.reap()
         record = backend.get(task_id)
         if not record or (request.path == "/api" and not record.get("public_access")):

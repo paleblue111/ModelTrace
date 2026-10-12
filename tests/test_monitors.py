@@ -6,10 +6,20 @@ import pytest
 
 from detection_store import LEASES, QUEUE
 from monitor_store import DEFAULT, DEFAULT_DASHBOARD, DUE, MonitorStore
-from test_detections import backend, client, worker, success
+from test_detections import backend, worker, success
 
 CONFIG = {"url":"https://example.com/v1", "key":"monitor-upstream-secret", "model":"alias",
           "reasoning_effort":"high", "interval_seconds":1800}
+
+
+@pytest.fixture
+def client(backend):
+    from app import app
+    app.config.update(TESTING=True)
+    app.extensions['detection_store'] = backend
+    client = app.test_client()
+    client.environ_base['HTTP_AUTHORIZATION'] = 'Bearer service-test-token'
+    return client
 
 
 def create(client):
@@ -21,6 +31,7 @@ def create(client):
 def test_shared_default_across_clients(client, backend):
     from app import app
     other = app.test_client()
+    other.environ_base['HTTP_AUTHORIZATION'] = 'Bearer service-test-token'
     url = '/status/api/monitors/default'
     assert other.get(url).json is None
     saved = client.post(url, json=CONFIG)
@@ -66,6 +77,7 @@ def test_home_opens_monitoring_and_old_index_is_removed(client):
 def test_shared_dashboard_across_browsers(client, backend):
     from app import app
     other = app.test_client()
+    other.environ_base['HTTP_AUTHORIZATION'] = 'Bearer service-test-token'
     first = client.get('/status/api/dashboards/default')
     assert first.status_code == 200 and first.json['monitors'] == []
     board = first.json['id']
@@ -561,7 +573,7 @@ def test_status_assets_use_content_addressed_urls(client):
     response = client.get('/status')
     assert response.headers['Cache-Control'] == 'no-store'
     urls = re.findall(r'(?:src|href)="(/status/assets/[^"]+)"', response.text)
-    assert len(urls) == 2
+    assert len(urls) == 3
     for url in urls:
         filename = url.rsplit('/', 1)[1]
         content = (Path(__file__).resolve().parents[1] / 'static' / filename).read_bytes()
