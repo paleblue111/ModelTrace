@@ -75,6 +75,99 @@ def test_secure_cookie_and_login_rate(client):
     assert reply.status_code == 429 and reply.headers['Retry-After']
 
 
+@pytest.mark.parametrize('host', ['example.test', 'example.test:8443'])
+def test_https_proxy_login_origin_session_and_csrf(client, monkeypatch, host):
+    from app import app
+    from werkzeug.middleware.proxy_fix import ProxyFix
+
+    base_url = 'http://' + host
+    headers = {'Origin': 'https://' + host, 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '192.0.2.1'}
+    reply = client.post('/admin/api/login', json={'token': 'service-test-token'}, base_url=base_url, headers=headers)
+    assert reply.status_code == 403 and 'TRUSTED_PROXY_HOPS' in reply.json['error']
+    assert 'Set-Cookie' not in reply.headers
+
+    monkeypatch.setattr(app, 'wsgi_app', ProxyFix(app.wsgi_app, x_for=1, x_proto=1))
+    reply = client.post('/admin/api/login', json={'token': 'service-test-token'}, base_url=base_url, headers=headers)
+    assert reply.status_code == 200 and 'Secure;' in reply.headers['Set-Cookie']
+    csrf = reply.json['csrf']
+    assert client.get('/admin', base_url=base_url, headers=headers).status_code == 200
+    assert client.get('/admin/api/session', base_url=base_url, headers=headers).json['csrf'] == csrf
+    assert client.patch('/admin/api/site', json={'title': 'proxy login works'}, base_url=base_url,
+                        headers={**headers, 'X-CSRF-Token': csrf}).status_code == 200
+    rejected = client.patch('/admin/api/site', json={'title': 'blocked'}, base_url=base_url,
+                            headers={**headers, 'Origin': 'https://other.example', 'X-CSRF-Token': csrf})
+    assert rejected.status_code == 403 and '请求来源无效' in rejected.json['error']
+    assert client.get('/admin/api/site', base_url=base_url, headers=headers).json['title'] == 'proxy login works'
+    rejected = client.post('/admin/api/login', json={'token': 'service-test-token'}, base_url=base_url,
+                           headers={**headers, 'Origin': 'https://other.example'})
+    assert rejected.status_code == 403
+    # ProxyFix deliberately does not trust X-Forwarded-Host; the proxy must preserve Host itself.
+    rejected = client.post('/admin/api/login', json={'token': 'service-test-token'}, base_url='http://internal.test:10001',
+                           headers={**headers, 'X-Forwarded-Host': host})
+    assert rejected.status_code == 403
+    assert client.post('/admin/api/logout', json={}, base_url=base_url,
+                       headers={**headers, 'X-CSRF-Token': csrf}).status_code == 200
+    assert client.get('/admin/api/session', base_url=base_url, headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize('origin', ['https://example.test', 'https://example.test:8443'])
+def test_browser_proxy_login_without_trusting_forwarded_headers(client, backend, origin):
+    base_url = 'http://internal.test:10001'
+    headers = {'Origin': origin, 'Sec-Fetch-Site': 'same-origin'}
+    wrong = client.post('/admin/api/login', json={'token': 'wrong'}, base_url=base_url, headers=headers)
+    assert wrong.status_code == 401 and 'Set-Cookie' not in wrong.headers
+    reply = client.post('/admin/api/login', json={'token': 'service-test-token'}, base_url=base_url, headers=headers)
+    assert reply.status_code == 200
+    assert 'Secure;' in reply.headers['Set-Cookie'] and 'HttpOnly;' in reply.headers['Set-Cookie']
+    csrf = reply.json['csrf']
+    cookie = client.get_cookie(COOKIE, domain='internal.test')
+    assert json.loads(backend.redis.get(session_key(cookie.value)))['origin'] == origin
+    assert client.get('/admin', base_url=base_url).status_code == 200
+    assert client.patch('/admin/api/site', json={'title': 'browser proxy'}, base_url=base_url,
+                        headers={**headers, 'X-CSRF-Token': csrf}).status_code == 200
+    assert client.patch('/admin/api/site', json={'title': 'blocked'}, base_url=base_url, headers=headers).status_code == 403
+    # Even a claimed same-origin request cannot change the origin bound to this session.
+    assert client.patch('/admin/api/site', json={'title': 'blocked'}, base_url=base_url,
+                        headers={**headers, 'Origin': 'https://other.example', 'X-CSRF-Token': csrf}).status_code == 403
+    assert client.get('/admin/api/site', base_url=base_url).json['title'] == 'browser proxy'
+    assert client.post('/admin/api/logout', json={}, base_url=base_url,
+                       headers={**headers, 'X-CSRF-Token': csrf}).status_code == 200
+    assert backend.redis.get(session_key(cookie.value)) is None
+    assert client.get('/admin/api/session', base_url=base_url).status_code == 401
+
+
+@pytest.mark.parametrize('site', ['same-site', 'cross-site', 'invalid'])
+@pytest.mark.parametrize('origin', [None, 'http://localhost'])
+def test_fetch_metadata_rejects_cross_origin_login_and_writes(client, site, origin):
+    headers = {'Sec-Fetch-Site': site}
+    if origin is not None:
+        headers['Origin'] = origin
+    assert client.post('/admin/api/login', json={'token': 'service-test-token'}, headers=headers).status_code == 403
+    csrf = login(client)
+    assert client.patch('/admin/api/site', json={'title': 'blocked'}, headers={**headers, **csrf}).status_code == 403
+    assert client.post('/admin/api/logout', json={}, headers={**headers, **csrf}).status_code == 403
+    assert client.get('/admin/api/session').status_code == 200
+
+
+@pytest.mark.parametrize('origin', ['', 'null', 'file://example.test', 'https://user:password@example.test',
+                                    'https://example.test/path', 'https://example.test:99999', 'https://[invalid',
+                                    'https://example.test https://other.example'])
+def test_fetch_metadata_does_not_accept_invalid_origin(client, origin):
+    reply = client.post('/admin/api/login', json={'token': 'service-test-token'},
+                        headers={'Sec-Fetch-Site': 'same-origin', 'Origin': origin})
+    assert reply.status_code == 403 and 'Set-Cookie' not in reply.headers
+
+
+def test_origin_default_ports_are_compared_correctly(client):
+    reply = client.post('/admin/api/login', json={'token': 'service-test-token'}, base_url='https://example.test:443',
+                        headers={'Origin': 'https://example.test'})
+    assert reply.status_code == 200 and 'Secure;' in reply.headers['Set-Cookie']
+    assert client.post('/admin/api/logout', json={}, base_url='https://example.test:443',
+                       headers={'Origin': 'https://example.test:443', 'X-CSRF-Token': reply.json['csrf']}).status_code == 200
+    assert client.post('/admin/api/login', json={'token': 'service-test-token'}, base_url='https://example.test:8443',
+                       headers={'Origin': 'https://example.test:443'}).status_code == 403
+
+
 def test_publication_order_history_and_sanitization(client, backend):
     monitors = MonitorStore(backend)
     first = monitors.create(validate_config({**MONITOR, 'name':'private-name', 'published':True, 'public_name':'公开 A', 'public_order':2}))

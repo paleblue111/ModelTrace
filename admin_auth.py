@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import secrets
+from urllib.parse import urlsplit
 
 from flask import Blueprint, g, jsonify, redirect, request
 from redis.exceptions import RedisError
@@ -22,9 +23,48 @@ def bearer_admin():
     return bool(token and hmac.compare_digest(request.headers.get("Authorization", "").encode(), f"Bearer {token}".encode()))
 
 
-def same_origin():
+def origin_parts(value):
+    if not value or any(character.isspace() for character in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+            return None
+        if parsed.path or parsed.query or parsed.fragment:
+            return None
+        port = parsed.port
+        return parsed.scheme, parsed.hostname, port if port is not None else (443 if parsed.scheme == "https" else 80)
+    except ValueError:
+        return None
+
+
+def same_origin(expected=None):
+    site = request.headers.get("Sec-Fetch-Site")
+    if site and site not in {"same-origin", "none"}:
+        return False
     origin = request.headers.get("Origin")
-    return not origin or origin == request.host_url.rstrip("/")
+    if origin is None:
+        return True
+    parts = origin_parts(origin)
+    if not parts:
+        return False
+    if expected:
+        return parts == origin_parts(expected)
+    # Browsers prohibit scripts from setting Sec-* headers. Fetch Metadata describes
+    # the browser-to-site origin, even when a proxy rewrites the upstream scheme/Host.
+    # Non-browser clients still need the administrator token or session plus CSRF.
+    if site == "same-origin":
+        return True
+    return parts == origin_parts(request.host_url.rstrip("/"))
+
+
+def secure_session_cookie():
+    origin = origin_parts(request.headers.get("Origin"))
+    return request.is_secure or (request.headers.get("Sec-Fetch-Site") == "same-origin" and origin is not None and origin[0] == "https")
+
+
+def invalid_origin():
+    return jsonify(error="请求来源无效，请检查访问域名与反向代理配置（Host、X-Forwarded-Proto、TRUSTED_PROXY_HOPS）"), 403
 
 
 @api.before_app_request
@@ -45,7 +85,9 @@ def authorize_admin():
                 return redirect("/admin/login")
             return jsonify(error="请先登录管理员后台"), 401
         if not g.admin_bearer and request.method not in {"GET", "HEAD", "OPTIONS"}:
-            if not same_origin() or not hmac.compare_digest(request.headers.get("X-CSRF-Token", "").encode(), g.admin_session["csrf"].encode()):
+            if not same_origin(g.admin_session.get("origin")):
+                return invalid_origin()
+            if not hmac.compare_digest(request.headers.get("X-CSRF-Token", "").encode(), g.admin_session["csrf"].encode()):
                 return jsonify(error="请求校验失败，请刷新后台重试"), 403
         from monitor_store import MonitorStore
         MonitorStore(store()).migrate_visibility()
@@ -57,7 +99,7 @@ def authorize_admin():
 def login():
     from detection_api import store
     if not same_origin():
-        return jsonify(error="请求来源无效"), 403
+        return invalid_origin()
     payload = request.get_json(silent=True)
     token = os.getenv("MODELTRACE_API_TOKEN", "")
     if not token:
@@ -79,10 +121,11 @@ def login():
         if old:
             redis.delete(session_key(old))
         sid = secrets.token_urlsafe(32)
-        session = {"csrf": secrets.token_urlsafe(32), "token_version": hashlib.sha256(token.encode()).hexdigest()}
+        session = {"csrf": secrets.token_urlsafe(32), "token_version": hashlib.sha256(token.encode()).hexdigest(),
+                   "origin": request.headers.get("Origin")}
         redis.set(session_key(sid), json.dumps(session), ex=SESSION_SECONDS)
         response = jsonify(csrf=session["csrf"])
-        response.set_cookie(COOKIE, sid, max_age=SESSION_SECONDS, httponly=True, secure=request.is_secure, samesite="Lax", path="/")
+        response.set_cookie(COOKIE, sid, max_age=SESSION_SECONDS, httponly=True, secure=secure_session_cookie(), samesite="Lax", path="/")
         response.headers["Cache-Control"] = "no-store"
         return response
     except (RedisError, ValueError):

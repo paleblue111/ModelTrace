@@ -27,10 +27,10 @@ docker compose up -d --build
 
 首次启动会自动生成并保存两个密钥，不需要手动运行 Python 命令，也不需要预先创建 `.env`。它们的用途分别是：
 
-- **管理令牌**：仅供旧版管理接口和手动测试使用；新的 `/api` 四参数调用不需要。
+- **管理令牌**：用于管理员后台登录、旧版管理接口和手动测试；新的 `/api` 四参数调用不需要。
 - **凭据加密密钥**：由程序内部使用，用来加密暂存在任务队列中的上游 API Key，调用方不需要填写。
 
-如需使用旧版管理接口，可以执行下面的命令查看管理令牌；普通 `/api` 调用可跳过：
+如需登录管理员后台或使用旧版管理接口，可以执行下面的命令查看管理令牌；普通 `/api` 调用可跳过：
 
 ```sh
 docker compose exec api python runtime_config.py token
@@ -102,6 +102,10 @@ docker compose exec api python runtime_config.py token
 
 使用输出的令牌登录。浏览器只保存 HttpOnly、SameSite=Lax 的会话 Cookie，不把管理令牌保存到浏览器存储；会话有效期 8 小时，退出立即失效，更换管理令牌后旧会话也会失效。HTTPS 下 Cookie 自动启用 Secure。后台写请求校验 CSRF，现有服务令牌的 Bearer 调用仍可管理受保护接口。
 
+现代浏览器通过 `Sec-Fetch-Site: same-origin` 标识同源请求，后台据此兼容 HTTPS 反向代理转为内部 HTTP、以及代理改写 Host 的部署；无需为了登录单独修改 `.env`。HTTPS 浏览器登录仍设置 Secure Cookie，会话绑定登录时的 Origin，后台写操作仍要求 CSRF。应用不会因此自动信任 `X-Forwarded-For` 或 `X-Forwarded-Proto`。[Fetch Metadata 标准](https://www.w3.org/TR/fetch-metadata/)
+
+如果仍提示「请求来源无效」，检查是否使用同一域名访问页面与接口，或代理是否删除了浏览器的 `Sec-Fetch-Site`。不提供 Fetch Metadata 的旧浏览器继续使用严格 Origin 校验，需按下方「对外 HTTPS 与反向代理」配置。修改 `.env` 后执行 `docker compose up -d api worker scheduler`；仅执行 `docker compose restart` 不会更新容器的环境变量。
+
 #### 管理监测与首页
 
 1. 在后台点击「新增监测」，填写 URL、Key、模型、思考强度和检测间隔（1 分钟～7 天）。监测名称供后台区分供应商，Key 加密保存在服务器。
@@ -144,11 +148,13 @@ TRUSTED_PROXY_HOPS=1
 ```nginx
 location / {
     proxy_pass http://127.0.0.1:10001;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+`Host` 使用 `$http_host` 保留浏览器访问的端口（例如 HTTPS 的 `8443`），避免登录时来源校验不一致。若通过宝塔配置反向代理，在该站点的代理配置中添加上述请求头；不要重复添加同一路径的 `location`。修改后检查并重新加载 Nginx 配置。
 
 更新容器后通过 HTTPS 域名访问。IP 限流使用真实客户端地址，管理员 Cookie 使用 Secure。默认 `TRUSTED_PROXY_HOPS=0` 不信任客户端提交的转发头；只有后端无法被绕过代理直接访问时，才配置实际的可信代理层数。[Flask 代理配置说明](https://flask.palletsprojects.com/en/stable/deploying/proxy_fix/)
 
@@ -405,6 +411,7 @@ python -m pip install -r requirements-browser.txt
 python -m playwright install chromium
 python tests/status_browser.py
 python tests/public_browser.py
+BROWSER_HTTPS_PROXY=1 python tests/public_browser.py
 ```
 
 后台截图默认输出到 `/tmp/modeltrace-status-preview`，公开页面截图输出到 `/tmp/modeltrace-public-preview`，可用 `STATUS_SCREENSHOT_DIR` 修改输出目录。

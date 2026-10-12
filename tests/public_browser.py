@@ -12,6 +12,8 @@ from cryptography.fernet import Fernet
 os.environ['CREDENTIAL_ENCRYPTION_KEY'] = Fernet.generate_key().decode()
 os.environ['MODELTRACE_API_TOKEN'] = 'public-browser-admin-token'
 os.environ['ASYNC_ONLY'] = 'true'
+os.environ['TRUSTED_PROXY_HOPS'] = '0'
+proxy_https = os.getenv('BROWSER_HTTPS_PROXY') == '1'
 
 import fakeredis
 from flask import request
@@ -29,10 +31,15 @@ app.extensions['detection_store'] = backend
 monitors = MonitorStore(backend)
 delayed = {'id': None}
 delay_started, delay_release = threading.Event(), threading.Event()
+proxy_requests = []
 
 
 @app.after_request
 def delay_public_detail(response):
+    if proxy_https and request.path.startswith('/admin/api/') and request.method in {'POST', 'PATCH'}:
+        proxy_requests.append({'path': request.path, 'site': request.headers.get('Sec-Fetch-Site'),
+                               'origin': request.headers.get('Origin'), 'secure': request.is_secure,
+                               'host': request.host, 'status': response.status_code})
     if delayed['id'] and request.path == '/public/api/detections/' + delayed['id']:
         delayed['id'] = None
         delay_started.set()
@@ -45,10 +52,20 @@ config = {'url':'https://private-provider.example/v1', 'key':'private-administra
 first = monitors.create(validate_config({**config, 'name':'private administrator label'}))
 second = monitors.create(validate_config({**config, 'name':'second private label', 'model':'admin-model-2'}))
 backend.redis.set('modeltrace:scheduler:heartbeat', time.time(), ex=600)
-server = make_server('127.0.0.1', 0, app, threaded=True)
+
+
+def internal_http(environ, start_response):
+    # Real browser HTTPS, with the upstream scheme and Host rewritten as by a proxy.
+    upstream = dict(environ, HTTP_HOST='internal.test:10001', SERVER_NAME='internal.test', SERVER_PORT='10001')
+    upstream['wsgi.url_scheme'] = 'http'
+    return app(upstream, start_response)
+
+
+server = make_server('127.0.0.1', 0, internal_http if proxy_https else app, threaded=True,
+                     ssl_context='adhoc' if proxy_https else None)
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
-base = f'http://127.0.0.1:{server.server_port}'
+base = f'{"https" if proxy_https else "http"}://127.0.0.1:{server.server_port}'
 output = Path(os.getenv('STATUS_SCREENSHOT_DIR', '/tmp/modeltrace-public-preview'))
 output.mkdir(parents=True, exist_ok=True)
 
@@ -62,8 +79,8 @@ try:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         errors = []
-        admin_context = browser.new_context(viewport={'width':1440,'height':1000})
-        guest_context = browser.new_context(viewport={'width':1440,'height':1000})
+        admin_context = browser.new_context(viewport={'width':1440,'height':1000}, ignore_https_errors=proxy_https)
+        guest_context = browser.new_context(viewport={'width':1440,'height':1000}, ignore_https_errors=proxy_https)
         admin = admin_context.new_page()
         guest = guest_context.new_page()
         for page in (admin, guest):
@@ -83,6 +100,10 @@ try:
         admin.locator('#login-submit').click()
         expect(admin.locator('#monitor-add')).to_be_enabled()
         expect(admin.locator('.monitor-tile')).to_have_count(2)
+        if proxy_https:
+            cookie = next(item for item in admin_context.cookies() if item['name'] == 'modeltrace_admin')
+            assert cookie['secure'] and cookie['httpOnly'] and cookie['sameSite'] == 'Lax'
+            assert 'modeltrace_admin' not in admin.evaluate('document.cookie')
         assert not any('public-browser-admin-token' in storage for storage in admin.evaluate('[JSON.stringify(localStorage), JSON.stringify(sessionStorage), document.cookie]'))
         expect(admin.locator('#site-title')).to_have_value('每一次调用，都有迹可循。')
         admin.locator('#site-title').fill('公开模型身份观测站')
@@ -218,9 +239,18 @@ try:
         admin.locator('#admin-logout').click()
         expect(admin.locator('#login-form')).to_be_visible()
         assert admin_context.request.get(base + '/status/api/dashboards/default').status == 401
+        if proxy_https:
+            assert proxy_requests
+            assert all(item['site'] == 'same-origin' and item['origin'] == base and not item['secure']
+                       and item['host'] == 'internal.test:10001' for item in proxy_requests)
+            assert any(item['path'] == '/admin/api/login' and item['status'] == 200 for item in proxy_requests)
+            assert any(item['path'] == '/admin/api/site' and item['status'] == 200 for item in proxy_requests)
+            assert any(item['path'] == '/admin/api/logout' and item['status'] == 200 for item in proxy_requests)
         assert not errors, errors
         browser.close()
     print('Public browser checks passed: login/logout, CSRF-backed admin settings, publication/order, anonymous submission, public results, moderation, feature switch, pagination, XSS escaping, and 320–1440px layout.')
+    if proxy_https:
+        print('HTTPS proxy checks passed with rewritten internal Host/HTTP, no trusted forwarding headers, and a Secure administrator cookie.')
     print(f'Screenshots: {output}')
 finally:
     server.shutdown()

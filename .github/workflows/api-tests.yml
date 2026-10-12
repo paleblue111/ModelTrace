@@ -21,6 +21,7 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - run: python tests/status_browser.py
       - run: python tests/public_browser.py
+      - run: BROWSER_HTTPS_PROXY=1 python tests/public_browser.py
       - name: Validate Compose and build image
         run: |
           docker compose config --quiet
