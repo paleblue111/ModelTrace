@@ -223,6 +223,13 @@ try:
         expect(page.locator('.monitor-tile')).to_have_count(1)
         page.locator('#monitor-filter').fill('')
         expect(page.locator('.monitor-tile')).to_have_count(3)
+        # Desktop monitoring cards live entirely inside the left sidebar.
+        expect(page.locator('.sidebar #monitor-list .monitor-tile')).to_have_count(3)
+        sidebar = page.locator('.sidebar').bounding_box()
+        selected_tile = page.locator('.monitor-tile.selected').bounding_box()
+        details = page.locator('#monitor-details').bounding_box()
+        assert selected_tile['x'] + selected_tile['width'] <= sidebar['x'] + sidebar['width']
+        assert details['x'] >= sidebar['x'] + sidebar['width']
         page.screenshot(path=str(output / 'status-desktop.png'), full_page=True)
         page.set_viewport_size({'width':390,'height':844})
         page.screenshot(path=str(output / 'status-mobile.png'), full_page=True)
@@ -369,10 +376,89 @@ try:
         for width in (320, 390, 768, 1024, 1440):
             legacy_page.set_viewport_size({'width': width, 'height': 1000})
             assert legacy_page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+
+        # Deleting from the sidebar is cancellable and recovers from API errors.
+        deletion = fresh_context.new_page()
+        deletion.on('pageerror', lambda error: errors.append(str(error)))
+        deletion.goto(base + '/status#monitor=' + second_id)
+        expect(deletion.locator('#target-model')).to_have_text('gpt-6-astra')
+        observe = fresh_context.new_page()
+        observe.on('pageerror', lambda error: errors.append(str(error)))
+        observe.goto(base + '/status#monitor=' + monitor_id)
+        expect(observe.locator('#target-model')).to_have_text('long-model-' * 50)
+        remove_first = deletion.locator(f'[data-action="delete"][data-id="{monitor_id}"]')
+        remove_first.click()
+        expect(deletion.locator('#delete-dialog')).to_be_visible()
+        expect(deletion.locator('#delete-name')).to_have_text('供应商' * 26)
+        deletion.locator('#delete-dialog [data-close="delete-dialog"]').last.click()
+        expect(deletion.locator('.monitor-tile')).to_have_count(3)
+        assert monitors.get(monitor_id)
+        failed_delete = '**/status/api/monitors/' + monitor_id
+        deletion.route(failed_delete, lambda route: route.fulfill(status=503, content_type='application/json', body='{"error":"delete unavailable"}') if route.request.method == 'DELETE' else route.continue_())
+        remove_first.click()
+        deletion.locator('#delete-confirm').click()
+        expect(deletion.locator('#delete-error')).to_have_text('delete unavailable')
+        expect(deletion.locator('#delete-confirm')).to_be_enabled()
+        expect(deletion.locator('.monitor-tile')).to_have_count(3)
+        assert monitors.get(monitor_id)
+        deletion.unroute(failed_delete)
+        deletion.locator('#delete-confirm').click()
+        expect(deletion.locator('#delete-dialog')).not_to_be_visible()
+        expect(deletion.locator('.monitor-tile')).to_have_count(2)
+        expect(deletion.locator('#target-model')).to_have_text('gpt-6-astra')
+        assert deletion.url == base + '/status#monitor=' + second_id
+        assert monitors.get(monitor_id) is None
+        observe.locator('#refresh').click()
+        expect(observe.locator('.monitor-tile')).to_have_count(2)
+        expect(observe.locator('#target-model')).to_have_text('gpt-6-astra')
+        observe.goto(base + '/status#monitor=' + monitor_id)
+        expect(observe.locator('#monitor-add')).to_be_enabled()
+        expect(observe.locator('#target-model')).to_have_text('gpt-6-astra')
+
+        # Removing the selected running monitor cancels its task and selects a neighbor.
+        deletion.locator('#run').click()
+        expect(deletion.locator('#active-panel')).to_be_visible()
+        monitors.tick(second_id)
+        removed_task = backend.claim()
+        assert removed_task
+        deletion.locator(f'[data-action="delete"][data-id="{second_id}"]').click()
+        expect(deletion.locator('#delete-active-note')).to_be_visible()
+        deletion.locator('#delete-confirm').click()
+        expect(deletion.locator('.monitor-tile')).to_have_count(1)
+        expect(deletion.locator('#target-model')).to_have_text('gpt-6.1-sol')
+        assert backend.get(removed_task['id'])['status'] == 'cancelled'
+        assert monitors.get(third_id)['enabled']
+        assert deletion.url == base + '/status#monitor=' + third_id
+
+        # Last-item removal leaves a usable empty panel and survives reloads.
+        deletion.set_viewport_size({'width':390,'height':844})
+        deletion.locator(f'[data-action="delete"][data-id="{third_id}"]').click()
+        deletion.screenshot(path=str(output / 'delete-mobile.png'), full_page=True)
+        assert deletion.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        deletion.locator('#delete-confirm').click()
+        expect(deletion.locator('.monitor-tile')).to_have_count(0)
+        expect(deletion.locator('#monitor-details')).not_to_be_visible()
+        expect(deletion.locator('#monitor-empty')).to_be_visible()
+        expect(deletion.locator('#monitor-count')).to_have_text('0')
+        assert deletion.url == base + '/status'
+        deletion.reload()
+        expect(deletion.locator('#monitor-empty')).to_be_visible()
+        expect(deletion.locator('#monitor-add')).to_be_enabled()
+        deletion.locator('#monitor-add').click()
+        deletion.locator('#config-name').fill('删除后重新添加')
+        deletion.locator('#config-url').fill('https://replacement.example/v1')
+        deletion.locator('#config-key').fill('replacement-secret')
+        deletion.locator('#config-model').fill('replacement-model')
+        deletion.locator('#save').click()
+        expect(deletion.locator('#settings-dialog')).not_to_be_visible()
+        expect(deletion.locator('#target-model')).to_have_text('replacement-model')
+        expect(deletion.locator('.monitor-tile')).to_have_count(1)
+        expect(deletion.locator('#monitor-empty')).not_to_be_visible()
         assert not errors, errors
         browser.close()
     print('Browser integration passed: shared dashboard across browsers, root redirect, multiple providers/models, key reuse, independent history/schedules, bookmark restore, legacy migration, search, and desktop/mobile layout.')
     print('Regression checks passed: cached old assets, isolated detail failures, keyboard focus through polling, single-line durations at 320–1440px.')
+    print('Sidebar/deletion checks passed: left-side cards, cancel/retry, cross-browser removal, deleted bookmarks, running-task cancellation, neighbor selection, last-item removal, and adding again.')
     print(f'Screenshots: {output}')
 finally:
     server.shutdown()

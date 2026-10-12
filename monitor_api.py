@@ -151,13 +151,17 @@ def create():
         return jsonify(error="任务存储暂不可用"), 503
 
 
-@api.route("/status/api/monitors/<monitor_id>", methods=["GET", "PATCH"])
+@api.route("/status/api/monitors/<monitor_id>", methods=["GET", "PATCH", "DELETE"])
 @api.route("/status/api/monitors/<monitor_id>/run", methods=["POST"])
 def monitor(monitor_id):
     if not valid_id(monitor_id):
         return jsonify(error="监测配置不存在"), 404
     try:
         backend = MonitorStore(store())
+        if request.method == "DELETE":
+            if not backend.delete(monitor_id):
+                return jsonify(error="监测配置不存在"), 404
+            return jsonify(id=monitor_id, deleted=True)
         if request.method == "PATCH":
             current = backend.get(monitor_id)
             if not current:

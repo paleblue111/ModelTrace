@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from detection_store import QUEUE
+from detection_store import LEASES, QUEUE
 from monitor_store import DEFAULT, DEFAULT_DASHBOARD, DUE, MonitorStore
 from test_detections import backend, client, worker, success
 
@@ -370,6 +370,117 @@ def test_concurrent_additions_do_not_lose_membership(backend):
         created = list(pool.map(lambda _: MonitorStore(backend).add_to_dashboard(board['id'], config), range(8)))
     assert set(store.get_dashboard(board['id'])['monitor_ids']) == {item['id'] for item in created}
     assert all(store.get(item['id']) for item in created)
+
+
+def test_delete_monitor_removes_membership_credentials_history_and_default(client, backend):
+    board = client.get('/status/api/dashboards/default').json['id']
+    first = add_monitor(client, board)
+    second = add_monitor(client, board, model='keep-this-model')
+    store = MonitorStore(backend)
+    assert store.default()['id'] == first['id']
+    store.update(first['id'], {'run_requested': True})
+    store.tick(first['id'])
+    task = backend.claim()
+    worker.run_task(backend, task, success)
+    store.tick(first['id'])
+    assert store.get(first['id'])['history']
+    before = store.get(second['id'])
+    reply = client.delete('/status/api/monitors/' + first['id'])
+    assert reply.status_code == 200 and reply.json == {'id': first['id'], 'deleted': True}
+    assert reply.headers['Cache-Control'] == 'no-store'
+    assert store.get(first['id']) is None
+    assert backend.redis.get(DEFAULT) is None
+    assert backend.redis.zscore(DUE, first['id']) is None
+    assert store.get_dashboard(board)['monitor_ids'] == [second['id']]
+    assert client.get('/status/api/dashboards/default').json['monitors'][0]['id'] == second['id']
+    assert store.get(second['id']) == before
+    assert store.default()['id'] == second['id']
+    assert client.get('/status/api/monitors/' + first['id']).status_code == 404
+    assert client.patch('/status/api/monitors/' + first['id'], json={'enabled': True}).status_code == 404
+    assert client.post('/status/api/monitors/' + first['id'] + '/run').status_code == 404
+    assert client.delete('/status/api/monitors/' + first['id']).status_code == 404
+    assert client.delete('/status/api/monitors/invalid').status_code == 404
+    assert client.post('/status/api/dashboards', json={'monitor_id': first['id']}).status_code == 404
+
+
+@pytest.mark.parametrize('state', ['requested', 'queued', 'running'])
+def test_delete_stops_pending_work_without_affecting_other_monitors(client, backend, state):
+    board = dashboard(client)
+    first = add_monitor(client, board)
+    second = add_monitor(client, board, model='keep-running')
+    store = MonitorStore(backend)
+    store.update(first['id'], {'enabled': True})
+    active = None
+    if state != 'requested':
+        store.tick(first['id'])
+        active = backend.get(store.get(first['id'])['active_task_id'])
+        if state == 'running':
+            active = backend.claim()
+    store.update(second['id'], {'enabled': True})
+    store.tick(second['id'])
+    before = store.get(second['id'])
+    other_task = before['active_task_id']
+    assert client.delete('/status/api/monitors/' + first['id']).status_code == 200
+    store.tick(first['id'])
+    assert store.get(first['id']) is None
+    assert backend.redis.zscore(DUE, first['id']) is None
+    assert backend.redis.lrange(QUEUE, 0, -1) == [other_task]
+    if active:
+        cancelled = backend.get(active['id'])
+        assert cancelled['status'] == 'cancelled' and cancelled['reason'] == 'user_cancelled'
+        assert cancelled['finished_at'] is not None
+        assert backend.redis.get(backend.credential_key(active['id'])) is None
+        assert backend.redis.zscore(LEASES, active['id']) is None
+        if state == 'running':
+            calls = []
+            worker.run_task(backend, active, lambda *args: calls.append(1))
+            assert calls == []
+            assert backend.get(active['id'])['status'] == 'cancelled'
+    assert store.get(second['id']) == before
+    assert backend.credential(other_task) == CONFIG['key']
+
+
+def test_delete_last_monitor_keeps_dashboard_available_and_frees_capacity(client, backend):
+    board = client.get('/status/api/dashboards/default').json['id']
+    first = add_monitor(client, board)
+    store = MonitorStore(backend)
+    # A legacy monitor can be referenced by more than one saved panel.
+    extra = store.create_dashboard()
+    extra['monitor_ids'] = [first['id']]
+    backend.redis.set(store.dashboard_key(extra['id']), json.dumps(extra))
+    assert store.delete(first['id'])
+    assert store.get_dashboard(extra['id'])['monitor_ids'] == []
+    shared = client.get('/status/api/dashboards/default').json
+    assert shared['id'] == board and shared['monitors'] == []
+    created = add_monitor(client, board)
+    full = store.get_dashboard(board)
+    full['monitor_ids'] += ['0' * 32] * 99
+    backend.redis.set(store.dashboard_key(board), json.dumps(full))
+    assert client.post(f'/status/api/dashboards/{board}/monitors', json=CONFIG).status_code == 400
+    assert store.delete(created['id'])
+    replacement = add_monitor(client, board)
+    assert replacement['id'] in store.get_dashboard(board)['monitor_ids']
+
+
+def test_delete_and_concurrent_additions_preserve_other_memberships(client, backend):
+    from monitor_api import validate_config
+    board = dashboard(client)
+    first = add_monitor(client, board)
+    store = MonitorStore(backend)
+    store.update(first['id'], {'enabled': True})
+    config = validate_config(CONFIG)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        adds = [pool.submit(store.add_to_dashboard, board, config) for _ in range(8)]
+        ticks = [pool.submit(store.tick, first['id']) for _ in range(4)]
+        deletion = pool.submit(store.delete, first['id'])
+        assert deletion.result()
+        created = [future.result() for future in adds]
+        for future in ticks:
+            future.result()
+    assert store.get(first['id']) is None
+    assert set(store.get_dashboard(board)['monitor_ids']) == {item['id'] for item in created}
+    assert backend.redis.zscore(DUE, first['id']) is None
+    assert backend.redis.llen(QUEUE) == 0
 
 
 @pytest.mark.parametrize('name', [None, 123, 'x' * 81])

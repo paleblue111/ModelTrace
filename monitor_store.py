@@ -7,7 +7,7 @@ import uuid
 
 from redis import WatchError
 
-from detection_store import QUEUE, TERMINAL, public_record
+from detection_store import LEASES, QUEUE, TERMINAL, public_record
 
 DUE = "modeltrace:monitors:due"
 DEFAULT = "modeltrace:monitors:default"
@@ -47,7 +47,8 @@ class MonitorStore:
                         return record
                     records = []
                     for key in self.redis.scan_iter(match="modeltrace:monitor:*"):
-                        raw = self.redis.get(key)
+                        pipe.watch(key)
+                        raw = pipe.get(key)
                         if raw:
                             records.append(json.loads(raw))
                     record = min(records, key=lambda item: (item["created_at"], item["id"])) if records else None
@@ -102,7 +103,9 @@ class MonitorStore:
         while True:
             with self.redis.pipeline() as pipe:
                 try:
-                    pipe.watch(key)
+                    pipe.watch(key, self.key(monitor_id))
+                    if not pipe.get(self.key(monitor_id)):
+                        raise MonitorNotFound("原监测配置不存在")
                     dashboard = json.loads(pipe.get(key))
                     if monitor_id in dashboard["monitor_ids"]:
                         return dashboard
@@ -147,7 +150,8 @@ class MonitorStore:
                     else:
                         monitors = []
                         for key in self.redis.scan_iter(match="modeltrace:monitor:*"):
-                            raw = self.redis.get(key)
+                            pipe.watch(key)
+                            raw = pipe.get(key)
                             if raw:
                                 monitors.append(json.loads(raw))
                         monitors.sort(key=lambda item: (item["created_at"], item["id"]))
@@ -249,6 +253,58 @@ class MonitorStore:
                     self.save(pipe, record)
                     pipe.execute()
                     return record
+                except WatchError:
+                    continue
+
+    def delete(self, monitor_id):
+        """Remove configuration, membership and scheduling in one transaction."""
+        key = self.key(monitor_id)
+        while True:
+            with self.redis.pipeline() as pipe:
+                try:
+                    pipe.watch(key, DEFAULT, DEFAULT_DASHBOARD)
+                    raw = pipe.get(key)
+                    if not raw:
+                        return False
+                    record = json.loads(raw)
+                    dashboards = []
+                    for dashboard_key in self.redis.scan_iter(match="modeltrace:dashboard:*"):
+                        pipe.watch(dashboard_key)
+                        dashboard_raw = pipe.get(dashboard_key)
+                        if dashboard_raw:
+                            dashboard = json.loads(dashboard_raw)
+                            if monitor_id in dashboard["monitor_ids"]:
+                                dashboard["monitor_ids"] = [item for item in dashboard["monitor_ids"] if item != monitor_id]
+                                dashboards.append((dashboard_key, dashboard))
+                    is_default = pipe.get(DEFAULT) == monitor_id
+                    task_id = record["active_task_id"]
+                    task = None
+                    if task_id:
+                        task_key = self.tasks.key(task_id)
+                        pipe.watch(task_key)
+                        task_raw = pipe.get(task_key)
+                        task = json.loads(task_raw) if task_raw else None
+                        if task and task["status"] not in TERMINAL:
+                            now = time.time()
+                            task.update(status="cancelled", reason="user_cancelled", phase="finished",
+                                        updated_at=now, finished_at=now,
+                                        insufficient_samples=task["progress"]["valid"] < 3,
+                                        preliminary=bool(task["result"]) and task["progress"]["valid"] < 3)
+                    pipe.multi()
+                    pipe.delete(key)
+                    pipe.zrem(DUE, monitor_id)
+                    if is_default:
+                        pipe.delete(DEFAULT)
+                    for dashboard_key, dashboard in dashboards:
+                        pipe.set(dashboard_key, json.dumps(dashboard))
+                    if task_id:
+                        if task:
+                            pipe.set(task_key, json.dumps(task), ex=self.tasks.retention)
+                        pipe.delete(self.tasks.credential_key(task_id))
+                        pipe.lrem(QUEUE, 0, task_id)
+                        pipe.zrem(LEASES, task_id)
+                    pipe.execute()
+                    return True
                 except WatchError:
                     continue
 

@@ -25,6 +25,7 @@ let detailError = '';
 let editingId = null;
 let sourceId = null;
 let sourceUrl = '';
+let deletingId = null;
 const normalizedUrl = (value) => {
   const url = value.trim().replace(/\/+$/, '');
   return url.endsWith('/responses') ? url : url + (url.endsWith('/v1') ? '/responses' : '/v1/responses');
@@ -44,7 +45,7 @@ async function request(url, options = {}) {
     }
     return data;
   } catch (error) {
-    if (error.name === 'AbortError') throw new Error('连接超时，请刷新确认服务器状态；不要重复提交配置');
+    if (error.name === 'AbortError') throw new Error('连接超时，请刷新确认服务器状态；不要重复提交操作');
     throw error;
   } finally { clearTimeout(timeout); }
 }
@@ -74,7 +75,7 @@ function upsert(saved) {
 function renderList() {
   $('monitor-add').disabled = busy || !ready;
   $('monitor-count').textContent = monitors.length;
-  $('monitor-summary').textContent = monitors.length ? `${monitors.filter((item) => item.enabled).length} 个已开启 · ${monitors.filter(pending).length} 个待完成 · 点击卡片查看独立结果` : '每个监测项独立配置、调度和保存结果';
+  $('monitor-summary').textContent = monitors.length ? `${monitors.filter((item) => item.enabled).length} 个已开启 · ${monitors.filter(pending).length} 个待完成` : '每个监测独立保存结果';
   const query = $('monitor-filter').value.trim().toLowerCase();
   const visible = monitors.filter((item) => `${item.name || ''} ${item.url} ${item.model}`.toLowerCase().includes(query));
   // Preserve keyboard focus when background polling updates list controls.
@@ -84,7 +85,15 @@ function renderList() {
     const inProgress = pending(item);
     const status = inProgress ? '检测进行中' : item.enabled ? '持续监测' : '已暂停';
     const latest = item.latest;
-    return `<article class="monitor-tile ${item.id === monitorId ? 'selected' : ''}" data-monitor-id="${escape(item.id)}"><button type="button" class="monitor-select" data-action="select" data-id="${escape(item.id)}" aria-pressed="${item.id === monitorId}"><span class="tile-heading"><strong>${escape(title(item))}</strong><span class="badge ${item.enabled ? 'success' : 'neutral'}">${status}</span></span><span class="tile-provider">${escape(item.url)}</span><span class="tile-model">${escape(item.model)} · ${escape(item.reasoning_effort)} · 每 ${item.interval_seconds/60} 分钟</span><span class="tile-result">${latest ? `<b>${escape(latest.prediction_name || labels[latest.status] || '暂无归因')}</b> · ${pct(latest.probability)}<br>${escape(labels[latest.status] || '未知')} · 样本 ${latest.valid_samples}/3 · ${escape(date(latest.finished_at))}` : '等待第一轮检测<br>结果与历史独立保存'}</span></button><div class="tile-actions"><button type="button" class="button secondary" data-action="run" data-id="${escape(item.id)}" ${busy || inProgress || !ready ? 'disabled' : ''}>立即检测</button><button type="button" class="button ${item.enabled ? 'secondary' : 'primary'}" data-action="toggle" data-id="${escape(item.id)}" ${busy || !ready ? 'disabled' : ''}>${item.enabled ? '暂停监测' : '开启监测'}</button></div></article>`;
+    return `<article class="monitor-tile ${item.id === monitorId ? 'selected' : ''}" data-monitor-id="${escape(item.id)}">
+      <button type="button" class="monitor-select" data-action="select" data-id="${escape(item.id)}" aria-pressed="${item.id === monitorId}">
+        <span class="tile-heading"><strong>${escape(title(item))}</strong><span class="badge ${item.enabled ? 'success' : 'neutral'}">${status}</span></span>
+        <span class="tile-provider" title="${escape(item.url)}">${escape(item.url)}</span>
+        <span class="tile-model">${escape(item.model)} · ${escape(item.reasoning_effort)} · 每 ${item.interval_seconds/60} 分钟</span>
+        <span class="tile-result">${latest ? `<b>${escape(latest.prediction_name || labels[latest.status] || '暂无归因')}</b> · ${pct(latest.probability)}<br>${escape(labels[latest.status] || '未知')} · 样本 ${latest.valid_samples}/3 · ${escape(date(latest.finished_at))}` : '等待第一轮检测<br>结果与历史独立保存'}</span>
+      </button>
+      <div class="tile-actions"><button type="button" class="button tile-delete" data-action="delete" data-id="${escape(item.id)}" aria-label="删除 ${escape(title(item))}" ${busy || !ready ? 'disabled' : ''}>删除</button><button type="button" class="button secondary" data-action="run" data-id="${escape(item.id)}" ${busy || inProgress || !ready ? 'disabled' : ''}>立即检测</button><button type="button" class="button ${item.enabled ? 'secondary' : 'primary'}" data-action="toggle" data-id="${escape(item.id)}" ${busy || !ready ? 'disabled' : ''}>${item.enabled ? '暂停监测' : '开启监测'}</button></div>
+    </article>`;
   }).join('') : `<div class="empty"><strong>${monitors.length ? '没有找到匹配的监测' : '从添加第一个监测开始'}</strong><p>${monitors.length ? '试试其他名称、供应商地址或模型名。' : '点击「新增监测」，分别添加不同供应商和模型。'}</p></div>`;
   if (focusKey) $('monitor-list').querySelector(`[data-id="${focusKey[0]}"][data-action="${focusKey[1]}"]`)?.focus({preventScroll:true});
 }
@@ -106,6 +115,7 @@ function countdown() {
 }
 function render() {
   renderList();
+  $('monitor-empty').hidden = !ready || monitors.length > 0;
   $('monitor-details').hidden = !model;
   $('connection').textContent = networkError ? '连接暂时中断' : !dashboardId ? '等待配置' : schedulerOnline ? '调度服务在线' : '调度服务离线';
   $('connection').className = `connection ${networkError ? 'error' : schedulerOnline ? 'online' : ''}`;
@@ -166,9 +176,16 @@ async function refresh() {
   const expectedRevision = revision;
   const requestedDashboard = sharedDefault ? 'default' : dashboardId;
   try {
-    const dashboard = !dashboardId && monitorId
-      ? await request('/status/api/dashboards', {method:'POST', body:JSON.stringify({monitor_id:monitorId})})
-      : await request(`/status/api/dashboards/${requestedDashboard}`);
+    let dashboard;
+    if (!dashboardId && monitorId) {
+      try {
+        dashboard = await request('/status/api/dashboards', {method:'POST', body:JSON.stringify({monitor_id:monitorId})});
+      } catch (error) {
+        // A bookmark for a deleted monitor should still open the shared panel.
+        if (error.status !== 404) throw error;
+        dashboard = await request('/status/api/dashboards/default');
+      }
+    } else dashboard = await request(`/status/api/dashboards/${requestedDashboard}`);
     if (expectedRevision !== revision || busy) return;
     const selected = dashboard.monitors.some((item) => item.id === monitorId) ? monitorId : dashboard.monitors[0]?.id || null;
     dashboardId = dashboard.id;
@@ -273,6 +290,51 @@ async function action(kind, id = monitorId) {
   } catch (error) { if (expectedRevision === revision) networkError = error.message; }
   finally { busy = false; render(); if (expectedRevision !== revision) refresh(); }
 }
+function openDelete(id) {
+  const item = monitors.find((entry) => entry.id === id);
+  if (busy || !ready || !item) return;
+  deletingId = id;
+  $('delete-name').textContent = title(item);
+  $('delete-active-note').hidden = !pending(item);
+  $('delete-error').hidden = true;
+  $('delete-dialog').showModal();
+}
+async function deleteMonitor(event) {
+  event.preventDefault();
+  if (busy || !ready || !deletingId) return;
+  const id = deletingId;
+  busy = true;
+  const expectedRevision = ++revision;
+  for (const control of $('delete-form').querySelectorAll('button')) control.disabled = true;
+  $('delete-error').hidden = true;
+  render();
+  try {
+    try { await request(`/status/api/monitors/${id}`, {method:'DELETE'}); }
+    catch (error) { if (error.status !== 404) throw error; }
+    if (expectedRevision !== revision) return;
+    const index = monitors.findIndex((item) => item.id === id);
+    monitors = monitors.filter((item) => item.id !== id);
+    if (monitorId === id) {
+      monitorId = monitors[Math.max(0, Math.min(index, monitors.length - 1))]?.id || null;
+      model = null;
+      $('monitor-filter').value = '';
+      $('history-dialog').close();
+    }
+    networkError = '';
+    detailError = '';
+    remember();
+    $('delete-dialog').close();
+  } catch (error) {
+    if (expectedRevision !== revision) return;
+    $('delete-error').textContent = error.message;
+    $('delete-error').hidden = false;
+  } finally {
+    busy = false;
+    for (const control of $('delete-form').querySelectorAll('button')) control.disabled = false;
+    render();
+    refresh();
+  }
+}
 function select(id) {
   if (id === monitorId || busy || !ready) return;
   revision++;
@@ -300,9 +362,11 @@ $('monitor-list').addEventListener('click', (event) => {
   const button = event.target.closest('[data-action]');
   if (!button) return;
   if (button.dataset.action === 'select') select(button.dataset.id);
+  else if (button.dataset.action === 'delete') openDelete(button.dataset.id);
   else action(button.dataset.action, button.dataset.id);
 });
 $('settings-form').addEventListener('submit', saveSettings);
+$('delete-form').addEventListener('submit', deleteMonitor);
 $('toggle').addEventListener('click', () => action('toggle'));
 $('run').addEventListener('click', () => action('run'));
 $('refresh').addEventListener('click', refresh);
@@ -311,6 +375,8 @@ $('history').addEventListener('keydown', (event) => { if (['Enter',' '].includes
 for (const button of document.querySelectorAll('[data-close]')) button.addEventListener('click', () => $(button.dataset.close).close());
 $('settings-dialog').addEventListener('cancel', (event) => { if (busy) event.preventDefault(); });
 $('settings-dialog').addEventListener('close', () => { $('config-key').value = ''; });
+$('delete-dialog').addEventListener('cancel', (event) => { if (busy) event.preventDefault(); });
+$('delete-dialog').addEventListener('close', () => { deletingId = null; });
 function initialize() {
   revision++;
   ready = false;
@@ -321,6 +387,7 @@ function initialize() {
   detailError = '';
   $('settings-dialog').close();
   $('history-dialog').close();
+  $('delete-dialog').close();
   const fragment = new URLSearchParams(location.hash.slice(1));
   dashboardId = fragment.get('dashboard');
   monitorId = fragment.get('monitor');
