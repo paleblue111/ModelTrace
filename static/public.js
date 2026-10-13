@@ -2,6 +2,8 @@ const $ = (id) => document.getElementById(id);
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const labels = {queued:'排队中',running:'检测中',completed:'完整结果',partial:'样本不足',failed:'检测失败',cancelled:'已取消',interrupted:'执行中断'};
 const terminal = new Set(['completed','partial','failed','cancelled','interrupted']);
+const expandedMonitorHistories = new Set();
+const visibleHistoryLimit = 3;
 const pct = value => typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '—';
 const date = value => value ? new Date(value * 1000).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}) : '—';
 const statusBadge = status => `<span class="badge ${status === 'completed' ? 'success' : status === 'partial' ? 'warning' : status === 'failed' ? 'danger' : 'neutral'}">${escape(labels[status] || '等待检测')}</span>`;
@@ -35,8 +37,13 @@ function renderMonitor() {
     return;
   }
   const focused = document.activeElement?.dataset.historyIndex;
-  $('featured-detail').innerHTML = `<div class="featured-header"><div><h3>${escape(monitor.name)}</h3><p>${escape(monitor.model)} · ${escape(monitor.reasoning_effort)} · 每 ${monitor.interval_seconds/60} 分钟</p></div><span class="badge ${monitor.enabled ? 'success' : 'neutral'}">${monitor.enabled ? '持续监测' : '已暂停'}</span></div>${monitor.latest ? resultMarkup(monitor.latest) : '<div class="empty"><strong>等待第一轮检测</strong><p>结果完成后会自动更新。</p></div>'}${monitor.history.length ? `<div class="table-wrap featured-history"><table><thead><tr><th>完成时间</th><th>指纹归因</th><th>概率</th><th>样本</th><th>状态</th></tr></thead><tbody>${monitor.history.map((item,index) => `<tr data-history-index="${index}" tabindex="0" role="button" aria-label="查看 ${escape(date(item.finished_at))} 的检测详情"><td>${escape(date(item.finished_at))}</td><td>${escape(item.result?.prediction_name || '—')}</td><td>${pct(item.result?.probability)}</td><td>${item.progress.valid}/3</td><td>${statusBadge(item.status)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+  const toggleFocused = document.activeElement?.id === 'featured-history-toggle';
+  const expanded = expandedMonitorHistories.has(monitor.id);
+  const visibleHistory = expanded ? monitor.history : monitor.history.slice(0, visibleHistoryLimit);
+  const hiddenCount = monitor.history.length - visibleHistoryLimit;
+  $('featured-detail').innerHTML = `<div class="featured-header"><div><h3>${escape(monitor.name)}</h3><p>${escape(monitor.model)} · ${escape(monitor.reasoning_effort)} · 每 ${monitor.interval_seconds/60} 分钟</p></div><span class="badge ${monitor.enabled ? 'success' : 'neutral'}">${monitor.enabled ? '持续监测' : '已暂停'}</span></div>${monitor.latest ? resultMarkup(monitor.latest) : '<div class="empty"><strong>等待第一轮检测</strong><p>结果完成后会自动更新。</p></div>'}${monitor.history.length ? `<div class="table-wrap featured-history"><table><thead><tr><th>完成时间</th><th>指纹归因</th><th>概率</th><th>样本</th><th>状态</th></tr></thead><tbody id="featured-history-rows">${visibleHistory.map((item,index) => `<tr data-history-index="${index}" tabindex="0" role="button" aria-label="查看 ${escape(date(item.finished_at))} 的检测详情"><td>${escape(date(item.finished_at))}</td><td>${escape(item.result?.prediction_name || '—')}</td><td>${pct(item.result?.probability)}</td><td>${item.progress.valid}/3</td><td>${statusBadge(item.status)}</td></tr>`).join('')}</tbody></table></div>${hiddenCount > 0 ? `<div class="featured-history-controls"><button id="featured-history-toggle" class="text-button" type="button" aria-expanded="${expanded}" aria-controls="featured-history-rows">${expanded ? '收起历史 ↑' : `展开更多（${hiddenCount} 条） ↓`}</button></div>` : ''}` : ''}`;
   if (focused !== undefined) $('featured-detail').querySelector(`[data-history-index="${focused}"]`)?.focus({preventScroll:true});
+  if (toggleFocused) $('featured-history-toggle')?.focus({preventScroll:true});
 }
 function renderFeed(total) {
   const focused = document.activeElement?.closest('[data-public-id]')?.dataset.publicId;
@@ -44,7 +51,7 @@ function renderFeed(total) {
   $('public-page').textContent = `第 ${page} / ${pages} 页`;
   $('public-prev').disabled = page <= 1;
   $('public-next').disabled = page >= pages;
-  $('public-history').innerHTML = records.length ? records.map(item => `<tr data-public-id="${escape(item.id)}" tabindex="0" role="button" aria-label="查看 ${escape(item.model)} 的检测详情"><td>${escape(date(item.created_at))}</td><td>${escape(item.model)}</td><td>${escape(item.result?.prediction_name || '—')}</td><td>${pct(item.result?.probability)}</td><td>${item.progress.valid}/3</td><td>${statusBadge(item.status)}</td><td>${escape(date(item.finished_at))}</td></tr>`).join('') : '<tr><td colspan="7"><div class="empty history-empty"><strong>还没有公开检测记录</strong><p>提交第一轮检测，结果将自动更新。</p></div></td></tr>';
+  $('public-history').innerHTML = records.length ? records.map(item => `<tr data-public-id="${escape(item.id)}" tabindex="0" role="button" aria-label="查看 ${escape(item.model)} 的检测详情"><td>${escape(date(item.created_at))}</td><td class="endpoint-cell" title="${escape(item.url || '')}">${escape(item.url || '—')}</td><td>${escape(item.model)}</td><td>${escape(item.result?.prediction_name || '—')}</td><td>${pct(item.result?.probability)}</td><td>${item.progress.valid}/3</td><td>${statusBadge(item.status)}</td><td>${escape(date(item.finished_at))}</td></tr>`).join('') : '<tr><td colspan="8"><div class="empty history-empty"><strong>还没有公开检测记录</strong><p>提交第一轮检测，结果将自动更新。</p></div></td></tr>';
   if (focused) $('public-history').querySelector(`[data-public-id="${focused}"]`)?.focus({preventScroll:true});
 }
 async function refresh() {
@@ -112,7 +119,15 @@ $('public-test-form').addEventListener('submit', async event => {
 });
 $('monitor-list').addEventListener('click', event => { const item = event.target.closest('[data-monitor]'); if (item && item.dataset.monitor !== selected) { selected = item.dataset.monitor; monitor = null; revision++; renderMonitors(); renderMonitor(); history.replaceState(null,'', '#monitor=' + selected); refresh(); } });
 function selectHistory(event) { const row = event.target.closest('[data-history-index]'); const item = row && monitor?.history[Number(row.dataset.historyIndex)]; if (item) { dialogId = null; $('public-detail-content').innerHTML = `<p class="detail-note">请求 ${escape(item.model)} · ${escape(date(item.finished_at))}</p>${resultMarkup(item)}`; $('public-detail-dialog').showModal(); } }
-$('featured-detail').addEventListener('click', selectHistory);
+$('featured-detail').addEventListener('click', event => {
+  if (event.target.closest('#featured-history-toggle') && monitor) {
+    if (expandedMonitorHistories.has(monitor.id)) expandedMonitorHistories.delete(monitor.id);
+    else expandedMonitorHistories.add(monitor.id);
+    renderMonitor();
+    return;
+  }
+  selectHistory(event);
+});
 $('featured-detail').addEventListener('keydown', event => { if (['Enter',' '].includes(event.key) && event.target.hasAttribute('data-history-index')) { event.preventDefault(); selectHistory(event); } });
 $('public-history').addEventListener('click', event => { const row = event.target.closest('[data-public-id]'); if (row) openDetection(row.dataset.publicId); });
 $('public-history').addEventListener('keydown', event => { if (['Enter',' '].includes(event.key) && event.target.dataset.publicId) { event.preventDefault(); openDetection(event.target.dataset.publicId); } });

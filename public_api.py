@@ -31,12 +31,15 @@ def result_view(result):
 
 def task_view(task, public_id=None):
     start = task.get("started_at")
-    return {"id": public_id, "status": task["status"], "model": task.get("requested_model"),
+    view = {"id": public_id, "status": task["status"], "model": task.get("requested_model"),
             "reasoning_effort": task.get("reasoning_effort"), "created_at": task.get("created_at"),
             "finished_at": task.get("finished_at"), "note": REASONS.get(task.get("reason"), ""),
             "progress": {key: task["progress"].get(key) for key in ("target", "valid", "attempted", "max_attempts")},
             "elapsed_seconds": round((task.get("finished_at") or time.time()) - start, 2) if start else 0,
             "result": result_view(task.get("result"))}
+    if public_id is not None:
+        view["url"] = task.get("base_url")
+    return view
 
 
 def monitor_view(record, detailed=False):

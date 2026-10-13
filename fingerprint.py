@@ -16,7 +16,7 @@ DIMENSION = VALUE_MAX - VALUE_MIN + 1
 ALPHA = 0.5
 ORDERED_BLOCK_WEIGHT = 0.25
 DEFAULT_BANK = Path(__file__).with_name("data") / "gpt_bank.json"
-FAMILY_DISPLAY_NAMES = {"gpt": "GPT", "claude": "Claude"}
+FAMILY_DISPLAY_NAMES = {"gpt": "GPT"}
 
 
 def parse_numbers(text: str) -> list[int]:

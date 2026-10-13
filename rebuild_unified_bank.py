@@ -10,7 +10,6 @@ PROJECT = Path(__file__).resolve().parent
 OUTPUT = PROJECT / "data" / "unified_bank.json"
 SOURCES = {
     "gpt": ("GPT", PROJECT / "data" / "gpt_reference.jsonl"),
-    "claude": ("Claude", PROJECT / "data" / "claude_reference.jsonl"),
 }
 
 

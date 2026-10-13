@@ -148,6 +148,7 @@ try:
         guest.locator('#public-detail-close').click()
         expect(guest.locator('#public-history tr[data-public-id]')).to_have_count(1)
         public_id = guest.locator('#public-history tr[data-public-id]').get_attribute('data-public-id')
+        expect(guest.locator('#public-history .endpoint-cell')).to_have_text('https://guest-provider.example/v1/responses')
         complete(backend.claim())
         guest.locator('#public-refresh').click()
         expect(guest.locator('#public-history')).to_contain_text('完整结果')

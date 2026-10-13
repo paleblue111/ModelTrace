@@ -35,11 +35,11 @@ if proxy_hops:
 PROJECT = Path(__file__).resolve().parent
 STATUS_ASSETS = {
     name: sha256((PROJECT / "static" / name).read_bytes()).hexdigest()[:16]
-    for name in ("status.css", "status.js", "public.css", "public.js", "admin-login.js", "admin-site.js", "admin-client.js")
+    for name in ("status.css", "status.js", "public.css", "public.js", "admin-login.js", "admin-site.js", "admin-client.js", "codexpro-icon.svg")
 }
 CUSTOM_BANKS_FILE = PROJECT / "data" / "custom_banks.json"
 UNIFIED_BANK_FILE = PROJECT / "data" / "unified_bank.json"
-DEFAULT_BANK_ID = "claude"
+DEFAULT_BANK_ID = "gpt"
 
 
 def builtin_configs() -> dict[str, dict]:
@@ -48,11 +48,6 @@ def builtin_configs() -> dict[str, dict]:
             "label": "GPT",
             "bank_file": PROJECT / "data" / "gpt_bank.json",
             "data_file": PROJECT / "data" / "gpt_reference.jsonl",
-        },
-        "claude": {
-            "label": "Claude",
-            "bank_file": PROJECT / "data" / "claude_bank.json",
-            "data_file": PROJECT / "data" / "claude_reference.jsonl",
         },
     }
 

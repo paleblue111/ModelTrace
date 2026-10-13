@@ -3,6 +3,7 @@
 .page-heading h1,.page-heading p{overflow-wrap:anywhere}
 .section-heading h2{font-size:20px;font-weight:600;margin:8px 0 0}
 .featured-section{scroll-margin-top:20px}
+.public-sidebar .brand{margin-bottom:0}
 .public-tests{margin-top:36px;scroll-margin-top:20px}
 .featured-header{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:22px 24px;border-bottom:1px solid var(--line)}
 .featured-header h3{font-size:18px;margin:0 0 7px;overflow-wrap:anywhere}
@@ -12,6 +13,7 @@
 .public-result .result-metrics{padding-top:18px;margin-top:20px}
 .public-candidates{margin-top:18px;border-top:1px solid var(--line);padding-top:10px}
 .public-history{margin-top:20px}
+.public-history .endpoint-cell{min-width:160px;max-width:260px}
 .public-test-form{padding:23px 24px}
 fieldset{padding:0;margin:0;min-width:0;border:0}
 .submission-footer{display:flex;align-items:center;gap:24px;justify-content:space-between}
@@ -23,6 +25,8 @@ fieldset{padding:0;margin:0;min-width:0;border:0}
 .public-result-note{font-size:12px;color:var(--muted);line-height:1.8}
 .public-history tr[data-public-id],.featured-history tr[data-history-index]{cursor:pointer}
 .public-history tr[data-public-id]:hover,.featured-history tr[data-history-index]:hover{background:#f7faf8}
+.featured-history-controls{display:flex;justify-content:center;padding:10px 24px;border-top:1px solid var(--line)}
+.featured-history-controls .text-button{min-height:36px;padding:8px 16px}
 #public-detail-dialog{width:min(620px,calc(100vw - 30px))}
 .login-body{min-height:100vh;display:grid;place-items:center;padding:24px}
 .login-panel{width:min(420px,100%);padding:32px}

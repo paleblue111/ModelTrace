@@ -9,9 +9,10 @@ button:focus-visible,a:focus-visible{outline:3px solid #64bb97;outline-offset:3p
 a{color:inherit;text-decoration:none}
 [hidden]{display:none!important}
 .sidebar{position:fixed;inset:0 auto 0 0;width:304px;padding:30px 18px 20px;background:#fff;border-right:1px solid var(--line);display:flex;flex-direction:column}
-.brand{display:flex;align-items:center;gap:10px;font-size:21px;font-weight:750;letter-spacing:-.8px;margin-bottom:32px;flex-shrink:0}
-.brand-symbol{position:relative;display:grid;place-items:center;width:32px;height:32px;background:#183f31;color:white;border-radius:9px;font-size:20px;letter-spacing:-2px}
-.brand-symbol span{position:absolute;right:2px;top:1px;font-size:12px;color:#9de7bf}
+.brand{display:flex;align-items:center;gap:11px;font-size:13px;font-weight:600;letter-spacing:-.01em;margin-bottom:32px;flex-shrink:0}
+.brand-symbol{position:relative;display:grid;place-items:center;width:34px;height:34px;flex-shrink:0;background:#07090d;color:#28c6e8;border:1px solid rgba(255,255,255,.16);border-radius:50%;font-family:SFMono-Regular,"SF Mono",ui-monospace,Menlo,Monaco,Consolas,monospace;font-size:8px;font-weight:700;letter-spacing:.06em;box-shadow:inset 0 0 0 4px rgba(40,198,232,.04)}
+.brand-symbol::before,.brand-symbol::after{content:"";position:absolute;border-radius:50%;inset:5px;border:1px solid rgba(40,198,232,.52);border-right-color:transparent}
+.brand-symbol::after{inset:9px;border-color:rgba(255,255,255,.38);border-left-color:transparent}
 .nav-caption,.eyebrow{font-size:10px;font-weight:650;letter-spacing:1.7px;color:var(--muted)}
 .nav-caption{padding:0 12px;margin-bottom:14px}
 .nav-item{display:flex;align-items:center;gap:11px;padding:13px 12px;border-radius:7px;font-size:13px;margin-bottom:5px;color:#738078}
@@ -191,8 +192,7 @@ footer>span{display:none}
 }
 @media(min-width:821px) and (max-width:1100px){.overview,.details-grid{grid-template-columns:1fr}}
 @media(max-width:820px){.sidebar{position:static;width:auto;padding:16px 22px;display:flex;flex-direction:column;border-right:0;border-bottom:1px solid var(--line)}
-.brand{font-size:18px;margin:0}
-.brand-symbol{width:27px;height:27px;font-size:17px}
+.brand{font-size:13px;margin:0}
 .nav-caption,.sidebar-bottom,.nav-item.selected{display:none}
 .monitor-library{margin:18px 0 0}
 .monitor-list{max-height:260px}

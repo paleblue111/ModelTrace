@@ -99,7 +99,8 @@ def test_completed_partial_failed_and_candidate_results(backend, valid_count):
     assert result["insufficient_samples"] == (valid_count < 3)
     assert result["preliminary"] == (0 < valid_count < 3)
     if valid_count:
-        assert len(result["result"]["results"]) == 18
+        assert len(result["result"]["results"]) == 8
+        assert {candidate["family"] for candidate in result["result"]["results"]} == {"gpt"}
         assert result["result"]["used_outputs"] == valid_count
         assert result["result"]["calibration"]["queries"] == str(valid_count)
     assert len(result["bank_sha256"]) == 64

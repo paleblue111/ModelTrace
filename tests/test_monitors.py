@@ -573,7 +573,7 @@ def test_status_assets_use_content_addressed_urls(client):
     response = client.get('/status')
     assert response.headers['Cache-Control'] == 'no-store'
     urls = re.findall(r'(?:src|href)="(/status/assets/[^"]+)"', response.text)
-    assert len(urls) == 3
+    assert len(urls) == 4
     for url in urls:
         filename = url.rsplit('/', 1)[1]
         content = (Path(__file__).resolve().parents[1] / 'static' / filename).read_bytes()

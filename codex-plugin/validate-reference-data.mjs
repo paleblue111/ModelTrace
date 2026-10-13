@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const rowsByFamily = Object.fromEntries(await Promise.all(['gpt', 'claude'].map(async (family) => {
+const rowsByFamily = Object.fromEntries(await Promise.all(['gpt'].map(async (family) => {
   const referencePath = path.join(repository, 'data', `${family}_reference.jsonl`);
   const rows = (await readFile(referencePath, 'utf8'))
     .split(/\r?\n/u)
@@ -20,8 +20,6 @@ const rowsByFamily = Object.fromEntries(await Promise.all(['gpt', 'claude'].map(
 const boundedModels = [
   { id: 'gpt-6-sol', family: 'gpt', provider: 'codex', reasoningEffort: 'low', cliVersion: '0.155.1' },
   { id: 'gpt-6-luna', family: 'gpt', provider: 'codex', reasoningEffort: 'low', cliVersion: '0.155.1' },
-  { id: 'claude-opus-5-5', family: 'claude', provider: 'oaipro', responseModel: 'claude-opus-5-5', cleanRawNumbers: true },
-  { id: 'claude-haiku-5-5', family: 'claude', provider: 'oaipro', responseModel: 'claude-haiku-5-5', cleanRawNumbers: true },
 ];
 
 function parseNumbers(text) {
@@ -58,14 +56,8 @@ for (const spec of boundedModels) {
     assert.equal(row.provider, spec.provider, `${row.row_id} provider changed`);
     if (spec.reasoningEffort) assert.equal(row.reasoning_effort, spec.reasoningEffort, `${row.row_id} reasoning effort changed`);
     if (spec.cliVersion) assert.equal(row.cli_version, spec.cliVersion, `${row.row_id} CLI version changed`);
-    if (spec.responseModel) assert.equal(row.response_model, spec.responseModel, `${row.row_id} response model changed`);
     const numbers = parseNumbers(row.text);
     assert.equal(numbers.length, row.parsed_count, `${row.row_id} parsed_count is stale`);
-    if (spec.cleanRawNumbers) {
-      const raw = [...row.text.matchAll(/\d+/gu)].map((match) => Number(match[0]));
-      assert.equal(raw.length, numbers.length, `${row.row_id} contains extraneous numbers`);
-      assert.ok(raw.every((value) => value >= 1 && value <= 355), `${row.row_id} contains an out-of-range number`);
-    }
     const ratio = numbers.length / row.requested_count;
     assert.ok(ratio >= 0.8 && ratio <= 1.2, `${row.row_id} count ratio ${ratio} is outside [0.8, 1.2]`);
     minimumRatio = Math.min(minimumRatio, ratio);

@@ -210,8 +210,10 @@ def test_public_submission_progress_completion_cleanup_and_private_api(client, b
     assert backend.redis.get(backend.credential_key(task_id)) is None
     assert backend.redis.zcard(PUBLIC_RUNNING) == 0
     assert backend.redis.ttl(backend.public_key(public_id)) <= backend.retention
-    assert client.get('/public/api/detections').json['items'][0]['id'] == public_id
-    for secret in (task_id, CONFIG['base_url'], CONFIG['api_key'], 'errors', 'status_url', 'client_hash'):
+    published = client.get('/public/api/detections').json['items'][0]
+    assert published['id'] == public_id
+    assert published['url'] == reply.json['url'] == CONFIG['base_url'] + '/responses'
+    for secret in (task_id, CONFIG['api_key'], 'errors', 'status_url', 'client_hash'):
         assert secret not in reply.text
     assert post_public(client, ip='192.0.2.2', enabled=True).status_code == 400
     assert client.delete(response.headers['Location']).status_code == 405
